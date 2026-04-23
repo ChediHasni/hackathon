@@ -1,5 +1,6 @@
 django>=4.2
 djangorestframework
+django-cors-headers
 geopandas
 xarray
 shapely

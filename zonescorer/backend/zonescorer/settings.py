@@ -2,7 +2,6 @@
 Django settings for zonescorer project.
 """
 
-import os
 from pathlib import Path
 from decouple import config
 
@@ -10,12 +9,29 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-zonescorer-dev-key-change-in-production-xyz')
 
-DEBUG = config('DEBUG', default=True, cast=bool)
+def _config_bool(name, default=False):
+    raw = config(name, default=None)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {'1', 'true', 'yes', 'on'}:
+        return True
+    if value in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+
+DEBUG = _config_bool('DEBUG', default=True)
+
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+    if host.strip()
+]
 
 INSTALLED_APPS = [
     'django.contrib.contenttypes',
+    'django.contrib.auth',
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',

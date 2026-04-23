@@ -11,12 +11,28 @@ import sys
 import os
 import logging
 import numpy as np
+from decouple import config
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
 logger = logging.getLogger(__name__)
+
+
+def _config_bool(name, default=False):
+    raw = config(name, default=None)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {'1', 'true', 'yes', 'on'}:
+        return True
+    if value in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
+
+
+USE_MOCK_DATA = _config_bool("USE_MOCK_DATA", default=True)
 
 # ─── Criteria Metadata ────────────────────────────────────────────────────────
 CRITERIA = [
@@ -31,6 +47,8 @@ CRITERIA = [
 
 CRITERION_IDS = [c["id"] for c in CRITERIA]
 MAX_CELLS = 5000  # safety cap to prevent overloading the model
+H3_RESOLUTION = 7
+H3_FALLBACK_RESOLUTIONS = (7, 8, 9, 10)
 
 
 # ─── Lazy imports to avoid heavy startup cost ─────────────────────────────────
@@ -57,6 +75,25 @@ def _import_pipeline():
         get_air_quality, get_heat, get_accessibility, get_transit,
         run_inference, build_edge_index,
     )
+
+
+def _build_h3_cells(h3lib, bbox):
+    """Return H3 cells for a bbox, trying finer resolutions if needed."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    bbox_outline = [
+        (min_lat, min_lon),
+        (min_lat, max_lon),
+        (max_lat, max_lon),
+        (max_lat, min_lon),
+    ]
+    h3_poly = h3lib.LatLngPoly(bbox_outline)
+
+    for resolution in H3_FALLBACK_RESOLUTIONS:
+        cells = list(h3lib.h3shape_to_cells(h3_poly, resolution))
+        if cells:
+            return cells, resolution
+
+    return [], H3_RESOLUTION
 
 
 # ─── Views ────────────────────────────────────────────────────────────────────
@@ -130,7 +167,18 @@ class ScoreView(APIView):
                 (max_lat, min_lon),
             ]
             h3_poly = h3lib.LatLngPoly(bbox_outline)
-            h3_cells = list(h3lib.h3shape_to_cells(h3_poly, 7))
+            h3_cells = []
+            h3_resolution = H3_RESOLUTION
+            for resolution in H3_FALLBACK_RESOLUTIONS:
+                h3_cells = list(h3lib.h3shape_to_cells(h3_poly, resolution))
+                if h3_cells:
+                    h3_resolution = resolution
+                    break
+            if not h3_cells:
+                center_lat = (min_lat + max_lat) / 2.0
+                center_lon = (min_lon + max_lon) / 2.0
+                h3_cells = [h3lib.latlng_to_cell(center_lat, center_lon, 10)]
+                h3_resolution = 10
         except Exception as e:
             return Response(
                 {"error": f"H3 polyfill failed: {e}"},
@@ -149,17 +197,22 @@ class ScoreView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        logger.info("Scoring %d H3 cells for bbox %s", len(h3_cells), bbox)
+        logger.info(
+            "Scoring %d H3 cells at H3 resolution %d for bbox %s",
+            len(h3_cells),
+            h3_resolution,
+            bbox,
+        )
 
         # ── Run preprocessing modules (mock by default) ─────────────────────────
         try:
-            df_green  = get_greenness(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_clim   = get_weather(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_build  = get_buildings(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_air    = get_air_quality(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_heat   = get_heat(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_access = get_accessibility(h3_cells, bbox, use_mock=True).set_index('h3_index')
-            df_trans  = get_transit(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_green = get_greenness(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_clim = get_weather(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_build = get_buildings(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_air = get_air_quality(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_heat = get_heat(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_access = get_accessibility(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_trans = get_transit(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
         except Exception as e:
             logger.exception("Preprocessing error")
             return Response(

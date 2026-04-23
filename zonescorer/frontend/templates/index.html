@@ -122,8 +122,17 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
   background:var(--surface2);border:1px solid var(--border);
   border-radius:8px;padding:10px 12px;
 }
-.criterion-chip .name{font-size:.68rem;color:var(--muted);margin-bottom:4px}
+.criterion-chip .name-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.criterion-chip .name{font-size:.68rem;color:var(--muted)}
 .criterion-chip .val{font-size:1.1rem;font-weight:700}
+.source-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:2px 8px;border-radius:999px;font-size:.62rem;font-weight:700;
+  letter-spacing:.04em;text-transform:uppercase;border:1px solid transparent;
+}
+.source-badge.live{background:rgba(22,163,74,.10);color:#15803d;border-color:rgba(22,163,74,.18)}
+.source-badge.fallback-mock{background:rgba(234,179,8,.12);color:#a16207;border-color:rgba(234,179,8,.22)}
+.source-badge.mock{background:rgba(37,99,235,.08);color:#1d4ed8;border-color:rgba(37,99,235,.18)}
 
 /* ─── Legend ─────────────────────────────────────────────── */
 #legend{
@@ -326,7 +335,8 @@ async function runScore() {
     if (!res.ok) { setStatus('Error: ' + (data.error || 'Unknown error'), 'error'); return; }
 
     renderHexagons(data.features);
-    setStatus(`✓ Scored ${data.features.length} hexagons`, 'success');
+    const sourceSummary = describeSources(data.metadata?.data_sources || {});
+    setStatus(`✓ Scored ${data.features.length} hexagons${sourceSummary ? ' · ' + sourceSummary : ''}`, 'success');
   } catch(e) {
     setStatus('Network error: ' + e.message, 'error');
   } finally {
@@ -392,11 +402,19 @@ function showDetail(props) {
   // Criteria chips
   const grid = document.getElementById('criteria-grid');
   grid.innerHTML = '';
+  const sources = props.data_sources || {};
   CRITERIA_META.forEach(c => {
     const val = props.criteria[c.id] ?? 0;
+    const source = sources[c.id] || 'mock';
     const chip = document.createElement('div');
     chip.className = 'criterion-chip';
-    chip.innerHTML = `<div class="name">${c.icon} ${c.name}</div><div class="val" style="color:${scoreColor(val)}">${val}</div>`;
+    chip.innerHTML = `
+      <div class="name-row">
+        <div class="name">${c.icon} ${c.name}</div>
+        <span class="source-badge ${source}">${source.replace('-', ' ')}</span>
+      </div>
+      <div class="val" style="color:${scoreColor(val)}">${val}</div>
+    `;
     grid.appendChild(chip);
   });
 
@@ -466,6 +484,20 @@ function setStatus(msg, type) {
   el.style.display = msg ? 'block' : 'none';
   el.className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
   el.textContent = msg;
+}
+
+function describeSources(sources) {
+  const entries = Object.entries(sources);
+  if (!entries.length) return '';
+  const live = entries.filter(([, source]) => source === 'live').map(([name]) => name);
+  const fallback = entries.filter(([, source]) => source === 'fallback-mock').map(([name]) => name);
+  const mock = entries.filter(([, source]) => source === 'mock').map(([name]) => name);
+
+  const parts = [];
+  if (live.length) parts.push(`live: ${live.join(', ')}`);
+  if (fallback.length) parts.push(`fallback: ${fallback.join(', ')}`);
+  if (mock.length) parts.push(`mock: ${mock.join(', ')}`);
+  return parts.join(' | ');
 }
 
 function getCsrf() {

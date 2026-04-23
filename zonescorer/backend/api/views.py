@@ -110,13 +110,13 @@ def _load_criterion_frame(
     The returned DataFrame is always indexed by h3_index in the caller.
     """
     if USE_MOCK_DATA or not USE_LIVE_DATA:
-        return mock_fn()
+        return mock_fn(), "mock"
 
     try:
-        return live_fn(h3_cells, bbox, use_mock=False)
+        return live_fn(h3_cells, bbox, use_mock=False), "live"
     except Exception as exc:
         logger.warning("%s live data failed, falling back to mock: %s", label, exc)
-        return mock_fn()
+        return mock_fn(), "fallback-mock"
 
 
 # ─── Views ────────────────────────────────────────────────────────────────────
@@ -229,55 +229,62 @@ class ScoreView(APIView):
 
         # Try live data first when enabled, then fall back to synthetic data per criterion.
         try:
-            df_green = _load_criterion_frame(
+            df_green, green_source = _load_criterion_frame(
                 "Greenness",
                 get_greenness,
                 lambda: get_greenness(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_clim = _load_criterion_frame(
+            )
+            df_green = df_green.set_index('h3_index')
+            df_clim, climate_source = _load_criterion_frame(
                 "Climate",
                 get_weather,
                 lambda: get_weather(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_build = _load_criterion_frame(
+            )
+            df_clim = df_clim.set_index('h3_index')
+            df_build, buildings_source = _load_criterion_frame(
                 "Buildings",
                 get_buildings,
                 lambda: get_buildings(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_air = _load_criterion_frame(
+            )
+            df_build = df_build.set_index('h3_index')
+            df_air, air_source = _load_criterion_frame(
                 "Air quality",
                 get_air_quality,
                 lambda: get_air_quality(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_heat = _load_criterion_frame(
+            )
+            df_air = df_air.set_index('h3_index')
+            df_heat, heat_source = _load_criterion_frame(
                 "Heat",
                 get_heat,
                 lambda: get_heat(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_access = _load_criterion_frame(
+            )
+            df_heat = df_heat.set_index('h3_index')
+            df_access, accessibility_source = _load_criterion_frame(
                 "Accessibility",
                 get_accessibility,
                 lambda: get_accessibility(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
-            df_trans = _load_criterion_frame(
+            )
+            df_access = df_access.set_index('h3_index')
+            df_trans, transit_source = _load_criterion_frame(
                 "Transit",
                 get_transit,
                 lambda: get_transit(h3_cells, bbox, use_mock=True),
                 h3_cells,
                 bbox,
-            ).set_index('h3_index')
+            )
+            df_trans = df_trans.set_index('h3_index')
         except Exception as e:
             logger.exception("Preprocessing error")
             return Response(
@@ -317,6 +324,16 @@ class ScoreView(APIView):
             )
 
         # ── Build GeoJSON FeatureCollection ────────────────────────────────────
+        criterion_sources = {
+            "greenness": green_source,
+            "climate": climate_source,
+            "building_svf": buildings_source,
+            "air_quality": air_source,
+            "heat": heat_source,
+            "accessibility": accessibility_source,
+            "transit": transit_source,
+        }
+
         features = []
         for cell in h3_cells:
             score = scores.get(cell, 50.0)
@@ -346,11 +363,16 @@ class ScoreView(APIView):
                     "h3_index": cell,
                     "score": round(score, 1),
                     "criteria": cell_criteria,
+                    "data_sources": criterion_sources,
                 },
             })
 
         geojson = {
             "type": "FeatureCollection",
             "features": features,
+            "metadata": {
+                "h3_resolution": h3_resolution,
+                "data_sources": criterion_sources,
+            },
         }
         return Response(geojson)

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>ZoneScore — Living Quality Intelligence</title>
+<meta name="description" content="Rate any geographic zone worldwide on a 0–100 quality score using AI and real-world data."/>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0f14;--surface:#161a23;--surface2:#1e2333;--border:#2a3045;
+  --accent:#4f8ef7;--accent2:#7c5cfc;--green:#22c55e;--yellow:#eab308;--red:#ef4444;
+  --text:#e8eaf0;--muted:#6b7280;--radius:12px;--shadow:0 8px 32px rgba(0,0,0,.4);
+}
+html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:var(--bg);color:var(--text)}
+
+/* ─── Layout ─────────────────────────────────────────────── */
+#app{display:flex;height:100vh;width:100vw}
+#sidebar{
+  width:360px;min-width:360px;background:var(--surface);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+  z-index:1000;overflow:hidden;
+}
+#map-wrap{flex:1;position:relative}
+#map{width:100%;height:100%}
+
+/* ─── Header ─────────────────────────────────────────────── */
+#header{
+  padding:20px 20px 16px;border-bottom:1px solid var(--border);
+  background:linear-gradient(135deg,#161a23 0%,#1a1f2e 100%);
+}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.logo-icon{
+  width:36px;height:36px;border-radius:10px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+}
+.logo h1{font-size:1.25rem;font-weight:700;letter-spacing:-.02em}
+.logo h1 span{color:var(--accent)}
+.tagline{font-size:.72rem;color:var(--muted);margin-left:46px}
+
+/* ─── Controls ───────────────────────────────────────────── */
+#controls{padding:16px 20px;border-bottom:1px solid var(--border)}
+.control-label{font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.btn{
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  width:100%;padding:11px 16px;border:none;border-radius:8px;
+  font-family:'Inter',sans-serif;font-size:.85rem;font-weight:600;
+  cursor:pointer;transition:all .2s;
+}
+#btn-draw{
+  background:var(--surface2);color:var(--text);border:1px solid var(--border);margin-bottom:10px;
+}
+#btn-draw:hover{background:var(--border);border-color:var(--accent)}
+#btn-draw.active{border-color:var(--accent);background:rgba(79,142,247,.12);color:var(--accent)}
+#btn-score{
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;box-shadow:0 4px 15px rgba(79,142,247,.35);
+}
+#btn-score:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(79,142,247,.45)}
+#btn-score:active{transform:translateY(0)}
+#btn-score:disabled{opacity:.5;cursor:not-allowed;transform:none}
+#btn-clear{
+  background:transparent;color:var(--muted);border:1px solid var(--border);
+  margin-top:8px;font-size:.78rem;padding:7px;
+}
+#btn-clear:hover{color:var(--red);border-color:var(--red)}
+
+/* ─── Status ─────────────────────────────────────────────── */
+#status-bar{
+  margin:12px 20px 0;padding:10px 12px;border-radius:8px;
+  font-size:.78rem;font-weight:500;display:none;
+  background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.25);color:var(--accent);
+}
+#status-bar.error{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--red)}
+#status-bar.success{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);color:var(--green)}
+
+/* ─── Info Panel ─────────────────────────────────────────── */
+#info-panel{flex:1;overflow-y:auto;padding:16px 20px}
+#info-panel::-webkit-scrollbar{width:4px}
+#info-panel::-webkit-scrollbar-track{background:transparent}
+#info-panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+#welcome{text-align:center;padding:32px 0;color:var(--muted)}
+#welcome .big-icon{font-size:3rem;margin-bottom:12px}
+#welcome h3{font-size:.95rem;font-weight:600;color:var(--text);margin-bottom:8px}
+#welcome p{font-size:.78rem;line-height:1.6}
+.step{
+  display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;
+  text-align:left;
+}
+.step-num{
+  min-width:22px;height:22px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  font-size:.7rem;font-weight:700;display:flex;align-items:center;justify-content:center;
+}
+.step-text{font-size:.78rem;color:var(--muted);line-height:1.5;padding-top:2px}
+
+#hex-detail{display:none}
+.detail-score-card{
+  background:linear-gradient(135deg,var(--surface2),rgba(79,142,247,.08));
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;text-align:center;margin-bottom:16px;
+}
+.detail-score-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.detail-score-value{font-size:3.5rem;font-weight:700;line-height:1;margin-bottom:6px}
+.detail-score-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:12px}
+.detail-score-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(.34,1.56,.64,1)}
+.detail-h3{font-size:.65rem;color:var(--muted);margin-top:8px;font-family:monospace}
+
+.chart-wrap{position:relative;height:220px;margin-bottom:16px}
+.criteria-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.criterion-chip{
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;padding:10px 12px;
+}
+.criterion-chip .name{font-size:.68rem;color:var(--muted);margin-bottom:4px}
+.criterion-chip .val{font-size:1.1rem;font-weight:700}
+
+/* ─── Legend ─────────────────────────────────────────────── */
+#legend{
+  position:absolute;bottom:32px;right:16px;z-index:1000;
+  background:rgba(13,15,20,.9);backdrop-filter:blur(12px);
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;min-width:160px;
+}
+#legend h4{font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+.legend-bar{
+  height:10px;border-radius:5px;
+  background:linear-gradient(to right,#ef4444,#eab308,#22c55e);
+  margin-bottom:6px;
+}
+.legend-labels{display:flex;justify-content:space-between;font-size:.68rem;color:var(--muted)}
+
+/* ─── Spinner overlay ────────────────────────────────────── */
+#spinner{
+  position:absolute;inset:0;background:rgba(13,15,20,.65);
+  backdrop-filter:blur(4px);display:none;
+  align-items:center;justify-content:center;flex-direction:column;gap:16px;z-index:900;
+}
+#spinner.show{display:flex}
+.spin-ring{
+  width:52px;height:52px;border-radius:50%;
+  border:3px solid rgba(79,142,247,.2);
+  border-top-color:var(--accent);animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin-text{font-size:.85rem;color:var(--muted);font-weight:500}
+
+/* ─── Tooltip ────────────────────────────────────────────── */
+.hex-tooltip{
+  background:rgba(13,15,20,.95)!important;
+  border:1px solid var(--border)!important;
+  border-radius:8px!important;padding:8px 12px!important;
+  color:var(--text)!important;font-family:'Inter',sans-serif!important;
+  font-size:.78rem!important;font-weight:500!important;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────── */
+.leaflet-bar a{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important}
+.leaflet-bar a:hover{background:var(--surface2)!important}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ─── Sidebar ─────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="header">
+      <div class="logo">
+        <div class="logo-icon">🌍</div>
+        <h1>Zone<span>Score</span></h1>
+      </div>
+      <div class="tagline">Living Quality Intelligence · GAT-powered</div>
+    </div>
+
+    <div id="controls">
+      <div class="control-label">Analysis Tools</div>
+      <button id="btn-draw" class="btn" onclick="startDraw()">
+        <span>✏️</span> Draw Bounding Box
+      </button>
+      <button id="btn-score" class="btn" onclick="runScore()" disabled>
+        <span>⚡</span> Run ZoneScore Analysis
+      </button>
+      <button id="btn-clear" class="btn" onclick="clearAll()">
+        ✕ Clear
+      </button>
+      <div id="status-bar"></div>
+    </div>
+
+    <div id="info-panel">
+      <div id="welcome">
+        <div class="big-icon">🗺️</div>
+        <h3>Score Any Zone on Earth</h3>
+        <p style="margin-bottom:20px">Draw a rectangle on the map, then run the analysis to get AI-powered quality scores for every hexagon.</p>
+        <div class="step"><div class="step-num">1</div><div class="step-text">Click <strong>Draw Bounding Box</strong> and drag a rectangle on the map</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text">Click <strong>Run ZoneScore Analysis</strong> to score all hexagons</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text">Click any hexagon to see its criterion breakdown</div></div>
+      </div>
+
+      <div id="hex-detail">
+        <div class="detail-score-card">
+          <div class="detail-score-label">Zone Quality Score</div>
+          <div class="detail-score-value" id="detail-score">—</div>
+          <div class="detail-score-bar">
+            <div class="detail-score-fill" id="detail-score-fill"></div>
+          </div>
+          <div class="detail-h3" id="detail-h3"></div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="radar-chart"></canvas>
+        </div>
+        <div class="criteria-grid" id="criteria-grid"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ─── Map ──────────────────────────────────────────────── -->
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="legend">
+      <h4>Zone Score</h4>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>0</span><span>50</span><span>100</span></div>
+    </div>
+    <div id="spinner">
+      <div class="spin-ring"></div>
+      <div class="spin-text">Running GAT inference…</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Scripts -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+// ─── Map setup ─────────────────────────────────────────────
+const map = L.map('map', {zoomControl: true}).setView([20, 0], 3);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '©OpenStreetMap ©CartoDB',
+  subdomains: 'abcd', maxZoom: 19
+}).addTo(map);
+
+// ─── Draw control ───────────────────────────────────────────
+const drawnItems = new L.FeatureGroup().addTo(map);
+const drawControl = new L.Control.Draw({
+  draw: {
+    rectangle: {shapeOptions: {color:'#4f8ef7', weight:2, fillOpacity:.08}},
+    polygon:false, polyline:false, circle:false, marker:false, circlemarker:false
+  },
+  edit: {featureGroup: drawnItems, remove:true}
+});
+map.addControl(drawControl);
+
+let currentBbox = null;
+let hexLayer = null;
+let radarChart = null;
+
+map.on(L.Draw.Event.CREATED, e => {
+  drawnItems.clearLayers();
+  drawnItems.addLayer(e.layer);
+  const b = e.layer.getBounds();
+  currentBbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  document.getElementById('btn-score').disabled = false;
+  document.getElementById('btn-draw').classList.remove('active');
+  setStatus('Bounding box selected. Click Run ZoneScore Analysis.', 'info');
+});
+
+function startDraw() {
+  new L.Draw.Rectangle(map, drawControl.options.draw.rectangle).enable();
+  document.getElementById('btn-draw').classList.add('active');
+}
+
+// ─── Color ramp: red(0) → yellow(50) → green(100) ──────────
+function scoreColor(score) {
+  const s = Math.max(0, Math.min(100, score));
+  let r, g, b;
+  if (s <= 50) {
+    const t = s / 50;
+    r = 239; g = Math.round(68 + (163 - 68) * t); b = 68;
+  } else {
+    const t = (s - 50) / 50;
+    r = Math.round(234 - (234 - 34) * t); g = Math.round(179 + (197 - 179) * t); b = Math.round(8 + (94 - 8) * t);
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+// ─── Run scoring ────────────────────────────────────────────
+async function runScore() {
+  if (!currentBbox) return;
+  showSpinner(true);
+  document.getElementById('btn-score').disabled = true;
+  clearHexLayer();
+  hideDetail();
+
+  try {
+    const res = await fetch('/api/score/', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-CSRFToken': getCsrf()},
+      body: JSON.stringify({bbox: currentBbox})
+    });
+    const data = await res.json();
+    if (!res.ok) { setStatus('Error: ' + (data.error || 'Unknown error'), 'error'); return; }
+
+    renderHexagons(data.features);
+    setStatus(`✓ Scored ${data.features.length} hexagons`, 'success');
+  } catch(e) {
+    setStatus('Network error: ' + e.message, 'error');
+  } finally {
+    showSpinner(false);
+    document.getElementById('btn-score').disabled = false;
+  }
+}
+
+// ─── Render hexagons ────────────────────────────────────────
+function renderHexagons(features) {
+  clearHexLayer();
+  hexLayer = L.geoJSON({type:'FeatureCollection', features}, {
+    style: f => ({
+      fillColor: scoreColor(f.properties.score),
+      fillOpacity: 0.72,
+      color: 'rgba(255,255,255,0.08)',
+      weight: 0.5
+    }),
+    onEachFeature: (feature, layer) => {
+      const s = feature.properties.score;
+      layer.bindTooltip(
+        `<strong>${s.toFixed(1)}</strong> / 100`,
+        {className:'hex-tooltip', sticky:true, direction:'top'}
+      );
+      layer.on('click', () => showDetail(feature.properties));
+      layer.on('mouseover', function() {
+        this.setStyle({fillOpacity:0.9, weight:1.5, color:'rgba(255,255,255,0.4)'});
+      });
+      layer.on('mouseout', function() {
+        this.setStyle({fillOpacity:0.72, weight:0.5, color:'rgba(255,255,255,0.08)'});
+      });
+    }
+  }).addTo(map);
+  map.fitBounds(hexLayer.getBounds(), {padding:[20,20]});
+}
+
+// ─── Sidebar detail panel ───────────────────────────────────
+const CRITERIA_META = [
+  {id:'greenness',    name:'Greenness',       icon:'🌿'},
+  {id:'climate',      name:'Climate',         icon:'🌤'},
+  {id:'building_svf', name:'Sky View',        icon:'🏙'},
+  {id:'air_quality',  name:'Air Quality',     icon:'💨'},
+  {id:'heat',         name:'Heat / LST',      icon:'🌡'},
+  {id:'accessibility',name:'Accessibility',   icon:'🏥'},
+  {id:'transit',      name:'Transit',         icon:'🚌'},
+];
+
+function showDetail(props) {
+  document.getElementById('welcome').style.display = 'none';
+  document.getElementById('hex-detail').style.display = 'block';
+
+  const score = props.score;
+  const el = document.getElementById('detail-score');
+  el.textContent = score.toFixed(1);
+  el.style.color = scoreColor(score);
+
+  const fill = document.getElementById('detail-score-fill');
+  fill.style.width = score + '%';
+  fill.style.background = `linear-gradient(to right, ${scoreColor(Math.max(0,score-20))}, ${scoreColor(score)})`;
+
+  document.getElementById('detail-h3').textContent = props.h3_index;
+
+  // Criteria chips
+  const grid = document.getElementById('criteria-grid');
+  grid.innerHTML = '';
+  CRITERIA_META.forEach(c => {
+    const val = props.criteria[c.id] ?? 0;
+    const chip = document.createElement('div');
+    chip.className = 'criterion-chip';
+    chip.innerHTML = `<div class="name">${c.icon} ${c.name}</div><div class="val" style="color:${scoreColor(val)}">${val}</div>`;
+    grid.appendChild(chip);
+  });
+
+  // Radar chart
+  const labels = CRITERIA_META.map(c => c.name);
+  const values = CRITERIA_META.map(c => props.criteria[c.id] ?? 0);
+
+  if (radarChart) radarChart.destroy();
+  const ctx = document.getElementById('radar-chart').getContext('2d');
+  radarChart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Score',
+        data: values,
+        backgroundColor: 'rgba(79,142,247,0.15)',
+        borderColor: '#4f8ef7',
+        borderWidth: 2,
+        pointBackgroundColor: '#4f8ef7',
+        pointRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {legend: {display: false}},
+      scales: {
+        r: {
+          min: 0, max: 100,
+          ticks: {stepSize:25, color:'#6b7280', backdropColor:'transparent', font:{size:10}},
+          grid: {color:'rgba(255,255,255,0.07)'},
+          angleLines: {color:'rgba(255,255,255,0.07)'},
+          pointLabels: {color:'#9ca3af', font:{size:10, family:'Inter'}},
+        }
+      }
+    }
+  });
+}
+
+function hideDetail() {
+  document.getElementById('hex-detail').style.display = 'none';
+  document.getElementById('welcome').style.display = 'block';
+}
+
+// ─── Utilities ──────────────────────────────────────────────
+function clearAll() {
+  drawnItems.clearLayers();
+  clearHexLayer();
+  hideDetail();
+  currentBbox = null;
+  document.getElementById('btn-score').disabled = true;
+  document.getElementById('btn-draw').classList.remove('active');
+  setStatus('', '');
+}
+
+function clearHexLayer() {
+  if (hexLayer) { map.removeLayer(hexLayer); hexLayer = null; }
+}
+
+function showSpinner(show) {
+  const el = document.getElementById('spinner');
+  el.classList.toggle('show', show);
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('status-bar');
+  el.style.display = msg ? 'block' : 'none';
+  el.className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+  el.textContent = msg;
+}
+
+function getCsrf() {
+  const m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : '';
+}
+</script>
+</body>
+</html>

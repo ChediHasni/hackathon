@@ -1,0 +1,15 @@
+django>=4.2
+djangorestframework
+geopandas
+xarray
+shapely
+h3
+torch
+torch-geometric
+osmnx
+earthengine-api
+cdsapi
+python-decouple
+requests
+numpy
+pandas

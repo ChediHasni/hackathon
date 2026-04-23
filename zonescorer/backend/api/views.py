@@ -1,0 +1,238 @@
+"""
+ZoneScore API Views
+====================
+Endpoints:
+  GET  /api/health/   → {"status": "ok"}
+  GET  /api/criteria/ → list of criteria names + weights
+  POST /api/score/    → GeoJSON FeatureCollection of scored H3 hexagons
+"""
+
+import sys
+import os
+import logging
+import numpy as np
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+logger = logging.getLogger(__name__)
+
+# ─── Criteria Metadata ────────────────────────────────────────────────────────
+CRITERIA = [
+    {"id": "greenness",     "name": "Greenness",          "weight": 0.20, "unit": "NDVI",       "description": "Vegetation coverage from Sentinel-2"},
+    {"id": "climate",       "name": "Climate Comfort",    "weight": 0.15, "unit": "Score",      "description": "Temperature & precipitation comfort (ERA5-Land)"},
+    {"id": "building_svf",  "name": "Sky View Factor",    "weight": 0.10, "unit": "SVF",        "description": "Open sky availability derived from building heights"},
+    {"id": "air_quality",   "name": "Air Quality",        "weight": 0.15, "unit": "Inverted",   "description": "PM2.5 & NO2 levels — lower pollution = higher score"},
+    {"id": "heat",          "name": "Heat / LST",         "weight": 0.15, "unit": "Inverted°C", "description": "Land Surface Temperature — cooler = higher score"},
+    {"id": "accessibility", "name": "Accessibility",      "weight": 0.15, "unit": "POI count",  "description": "Schools, hospitals, pharmacies, supermarkets (OSM)"},
+    {"id": "transit",       "name": "Transit Access",     "weight": 0.10, "unit": "Stops",      "description": "Public transport stops per hexagon (Transitland)"},
+]
+
+CRITERION_IDS = [c["id"] for c in CRITERIA]
+MAX_CELLS = 5000  # safety cap to prevent overloading the model
+
+
+# ─── Lazy imports to avoid heavy startup cost ─────────────────────────────────
+def _import_pipeline():
+    """Import all preprocessing modules + GNN inference."""
+    # Add backend root to path so sibling packages resolve
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    import h3 as h3lib
+    from preprocessing.greenness    import get_greenness
+    from preprocessing.weather      import get_weather
+    from preprocessing.buildings    import get_buildings
+    from preprocessing.air_quality  import get_air_quality
+    from preprocessing.heat         import get_heat
+    from preprocessing.accessibility import get_accessibility
+    from preprocessing.transit      import get_transit
+    from gnn.inference              import run_inference, build_edge_index
+
+    return (
+        h3lib,
+        get_greenness, get_weather, get_buildings,
+        get_air_quality, get_heat, get_accessibility, get_transit,
+        run_inference, build_edge_index,
+    )
+
+
+# ─── Views ────────────────────────────────────────────────────────────────────
+
+class HealthView(APIView):
+    """GET /api/health/ — liveness probe."""
+
+    def get(self, request):
+        return Response({"status": "ok"})
+
+
+class CriteriaView(APIView):
+    """GET /api/criteria/ — returns scoring criteria metadata."""
+
+    def get(self, request):
+        return Response({"criteria": CRITERIA})
+
+
+class ScoreView(APIView):
+    """
+    POST /api/score/
+    Body: {"bbox": [minLon, minLat, maxLon, maxLat]}
+    Returns: GeoJSON FeatureCollection of scored H3 hexagons.
+    """
+
+    def post(self, request):
+        # ── Validate input ─────────────────────────────────────────────────────
+        bbox = request.data.get("bbox")
+        if not bbox or len(bbox) != 4:
+            return Response(
+                {"error": "bbox must be [minLon, minLat, maxLon, maxLat]"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            min_lon, min_lat, max_lon, max_lat = [float(v) for v in bbox]
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "bbox values must be numeric"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if min_lon >= max_lon or min_lat >= max_lat:
+            return Response(
+                {"error": "Invalid bbox: min values must be less than max values"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Load modules ───────────────────────────────────────────────────────
+        try:
+            (
+                h3lib,
+                get_greenness, get_weather, get_buildings,
+                get_air_quality, get_heat, get_accessibility, get_transit,
+                run_inference, build_edge_index,
+            ) = _import_pipeline()
+        except ImportError as e:
+            logger.error("Pipeline import error: %s", e)
+            return Response(
+                {"error": f"Server dependency missing: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ── Generate H3 cells covering the bbox (h3 v4 API) ────────────────────
+        # LatLngPoly expects (lat, lng) tuples — note the order
+        try:
+            bbox_outline = [
+                (min_lat, min_lon),
+                (min_lat, max_lon),
+                (max_lat, max_lon),
+                (max_lat, min_lon),
+            ]
+            h3_poly = h3lib.LatLngPoly(bbox_outline)
+            h3_cells = list(h3lib.h3shape_to_cells(h3_poly, 7))
+        except Exception as e:
+            return Response(
+                {"error": f"H3 polyfill failed: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not h3_cells:
+            return Response(
+                {"error": "No H3 cells found for this bounding box. Try a larger area."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(h3_cells) > MAX_CELLS:
+            return Response(
+                {"error": f"Area too large: {len(h3_cells)} cells (max {MAX_CELLS}). Please zoom in."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        logger.info("Scoring %d H3 cells for bbox %s", len(h3_cells), bbox)
+
+        # ── Run preprocessing modules (mock by default) ─────────────────────────
+        try:
+            df_green  = get_greenness(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_clim   = get_weather(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_build  = get_buildings(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_air    = get_air_quality(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_heat   = get_heat(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_access = get_accessibility(h3_cells, bbox, use_mock=True).set_index('h3_index')
+            df_trans  = get_transit(h3_cells, bbox, use_mock=True).set_index('h3_index')
+        except Exception as e:
+            logger.exception("Preprocessing error")
+            return Response(
+                {"error": f"Preprocessing failed: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ── Build feature matrix [N, 7] ────────────────────────────────────────
+        feature_matrix = np.column_stack([
+            df_green.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_clim.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_build.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_air.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_heat.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_access.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+            df_trans.reindex(h3_cells)['criterion_value_normalized'].fillna(0.5).values,
+        ]).astype(np.float32)
+
+        # ── Build edge index ───────────────────────────────────────────────────
+        try:
+            edge_index = build_edge_index(h3_cells)
+        except Exception as e:
+            logger.exception("Edge index build error")
+            return Response(
+                {"error": f"Graph construction failed: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ── Run GAT inference ──────────────────────────────────────────────────
+        try:
+            scores = run_inference(feature_matrix, edge_index, h3_cells)
+        except Exception as e:
+            logger.exception("Inference error")
+            return Response(
+                {"error": f"Model inference failed: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ── Build GeoJSON FeatureCollection ────────────────────────────────────
+        features = []
+        for cell in h3_cells:
+            score = scores.get(cell, 50.0)
+            boundary = h3lib.cell_to_boundary(cell)  # list of (lat, lng)
+            # GeoJSON uses [lng, lat]
+            coords = [[lng, lat] for lat, lng in boundary]
+            coords.append(coords[0])  # close ring
+
+            # Per-criterion raw values for the sidebar radar chart
+            cell_criteria = {
+                "greenness":     round(float(df_green.at[cell,  'criterion_value_normalized'] * 100), 1),
+                "climate":       round(float(df_clim.at[cell,   'criterion_value_normalized'] * 100), 1),
+                "building_svf":  round(float(df_build.at[cell,  'criterion_value_normalized'] * 100), 1),
+                "air_quality":   round(float(df_air.at[cell,    'criterion_value_normalized'] * 100), 1),
+                "heat":          round(float(df_heat.at[cell,   'criterion_value_normalized'] * 100), 1),
+                "accessibility": round(float(df_access.at[cell, 'criterion_value_normalized'] * 100), 1),
+                "transit":       round(float(df_trans.at[cell,  'criterion_value_normalized'] * 100), 1),
+            }
+
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [coords],
+                },
+                "properties": {
+                    "h3_index": cell,
+                    "score": round(score, 1),
+                    "criteria": cell_criteria,
+                },
+            })
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features,
+        }
+        return Response(geojson)

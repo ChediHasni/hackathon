@@ -32,7 +32,8 @@ def _config_bool(name, default=False):
     return default
 
 
-USE_MOCK_DATA = _config_bool("USE_MOCK_DATA", default=True)
+USE_MOCK_DATA = _config_bool("USE_MOCK_DATA", default=False)
+USE_LIVE_DATA = _config_bool("USE_LIVE_DATA", default=True)
 
 # ─── Criteria Metadata ────────────────────────────────────────────────────────
 CRITERIA = [
@@ -94,6 +95,28 @@ def _build_h3_cells(h3lib, bbox):
             return cells, resolution
 
     return [], H3_RESOLUTION
+
+
+def _load_criterion_frame(
+    label: str,
+    live_fn,
+    mock_fn,
+    h3_cells,
+    bbox,
+):
+    """
+    Try live data first when enabled, then fall back to synthetic data.
+
+    The returned DataFrame is always indexed by h3_index in the caller.
+    """
+    if USE_MOCK_DATA or not USE_LIVE_DATA:
+        return mock_fn()
+
+    try:
+        return live_fn(h3_cells, bbox, use_mock=False)
+    except Exception as exc:
+        logger.warning("%s live data failed, falling back to mock: %s", label, exc)
+        return mock_fn()
 
 
 # ─── Views ────────────────────────────────────────────────────────────────────
@@ -204,15 +227,57 @@ class ScoreView(APIView):
             bbox,
         )
 
-        # ── Run preprocessing modules (mock by default) ─────────────────────────
+        # Try live data first when enabled, then fall back to synthetic data per criterion.
         try:
-            df_green = get_greenness(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_clim = get_weather(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_build = get_buildings(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_air = get_air_quality(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_heat = get_heat(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_access = get_accessibility(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
-            df_trans = get_transit(h3_cells, bbox, use_mock=USE_MOCK_DATA).set_index('h3_index')
+            df_green = _load_criterion_frame(
+                "Greenness",
+                get_greenness,
+                lambda: get_greenness(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_clim = _load_criterion_frame(
+                "Climate",
+                get_weather,
+                lambda: get_weather(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_build = _load_criterion_frame(
+                "Buildings",
+                get_buildings,
+                lambda: get_buildings(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_air = _load_criterion_frame(
+                "Air quality",
+                get_air_quality,
+                lambda: get_air_quality(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_heat = _load_criterion_frame(
+                "Heat",
+                get_heat,
+                lambda: get_heat(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_access = _load_criterion_frame(
+                "Accessibility",
+                get_accessibility,
+                lambda: get_accessibility(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
+            df_trans = _load_criterion_frame(
+                "Transit",
+                get_transit,
+                lambda: get_transit(h3_cells, bbox, use_mock=True),
+                h3_cells,
+                bbox,
+            ).set_index('h3_index')
         except Exception as e:
             logger.exception("Preprocessing error")
             return Response(

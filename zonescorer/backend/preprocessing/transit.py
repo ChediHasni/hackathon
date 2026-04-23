@@ -11,7 +11,7 @@ Output DataFrame columns: [h3_index, criterion_value_normalized]
 import numpy as np
 import pandas as pd
 import requests
-from decouple import config
+from zonescorer.env import config
 
 
 TRANSITLAND_BASE_URL = "https://transit.land/api/v2"

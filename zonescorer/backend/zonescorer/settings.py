@@ -3,25 +3,13 @@ Django settings for zonescorer project.
 """
 
 from pathlib import Path
-from decouple import config
+from zonescorer.env import config, config_bool
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-zonescorer-dev-key-change-in-production-xyz')
 
-def _config_bool(name, default=False):
-    raw = config(name, default=None)
-    if raw is None:
-        return default
-    value = str(raw).strip().lower()
-    if value in {'1', 'true', 'yes', 'on'}:
-        return True
-    if value in {'0', 'false', 'no', 'off'}:
-        return False
-    return default
-
-
-DEBUG = _config_bool('DEBUG', default=True)
+DEBUG = config_bool('DEBUG', default=True)
 
 ALLOWED_HOSTS = [
     host.strip()

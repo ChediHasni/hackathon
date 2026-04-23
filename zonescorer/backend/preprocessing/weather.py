@@ -10,7 +10,7 @@ Output DataFrame columns: [h3_index, criterion_value_normalized]
 
 import numpy as np
 import pandas as pd
-from decouple import config
+from zonescorer.env import config
 
 
 # ─── Comfortable climate targets ─────────────────────────────────────────────
@@ -98,7 +98,7 @@ def _live_weather(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
         raise ImportError(f"Missing dependency for live weather data: {e}")
 
     cds_key = config('CDS_API_KEY', default='')
-    c = cdsapi.Client(key=cds_key, url='https://cds.climate.copernicus.eu/api/v2')
+    c = cdsapi.Client(key=cds_key, url='https://cds.climate.copernicus.eu/api')
 
     import tempfile, os
     with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as tmp:

@@ -403,15 +403,17 @@ function showDetail(props) {
   const grid = document.getElementById('criteria-grid');
   grid.innerHTML = '';
   const sources = props.data_sources || {};
+  const errors = props.data_errors || {};
   CRITERIA_META.forEach(c => {
     const val = props.criteria[c.id] ?? 0;
     const source = sources[c.id] || 'mock';
+    const error = errors[c.id] || '';
     const chip = document.createElement('div');
     chip.className = 'criterion-chip';
     chip.innerHTML = `
       <div class="name-row">
         <div class="name">${c.icon} ${c.name}</div>
-        <span class="source-badge ${source}">${source.replace('-', ' ')}</span>
+        <span class="source-badge ${source}" ${error ? `title="${escapeHtml(error)}"` : ''}>${source.replace('-', ' ')}</span>
       </div>
       <div class="val" style="color:${scoreColor(val)}">${val}</div>
     `;
@@ -498,6 +500,15 @@ function describeSources(sources) {
   if (fallback.length) parts.push(`fallback: ${fallback.join(', ')}`);
   if (mock.length) parts.push(`mock: ${mock.join(', ')}`);
   return parts.join(' | ');
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function getCsrf() {

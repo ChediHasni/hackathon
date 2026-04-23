@@ -10,7 +10,7 @@ Output DataFrame columns: [h3_index, criterion_value_normalized]
 
 import numpy as np
 import pandas as pd
-from decouple import config
+from zonescorer.env import config
 
 
 def get_greenness(h3_cells: list[str], bbox: list[float], use_mock: bool = True) -> pd.DataFrame:

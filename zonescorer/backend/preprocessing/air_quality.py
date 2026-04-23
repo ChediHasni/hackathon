@@ -11,7 +11,7 @@ Note: Values are INVERTED — lower pollution = higher score.
 
 import numpy as np
 import pandas as pd
-from decouple import config
+from zonescorer.env import config
 
 
 # WHO guideline thresholds

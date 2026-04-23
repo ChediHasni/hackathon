@@ -11,7 +11,7 @@ Output DataFrame columns: [h3_index, criterion_value_normalized]
 
 import numpy as np
 import pandas as pd
-from decouple import config
+from zonescorer.env import config
 
 
 LST_MIN = 15.0   # °C — comfortable

@@ -11,7 +11,7 @@ import sys
 import os
 import logging
 import numpy as np
-from decouple import config
+from zonescorer.env import config, config_bool
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -20,20 +20,8 @@ from rest_framework import status
 logger = logging.getLogger(__name__)
 
 
-def _config_bool(name, default=False):
-    raw = config(name, default=None)
-    if raw is None:
-        return default
-    value = str(raw).strip().lower()
-    if value in {'1', 'true', 'yes', 'on'}:
-        return True
-    if value in {'0', 'false', 'no', 'off'}:
-        return False
-    return default
-
-
-USE_MOCK_DATA = _config_bool("USE_MOCK_DATA", default=False)
-USE_LIVE_DATA = _config_bool("USE_LIVE_DATA", default=True)
+USE_MOCK_DATA = config_bool("USE_MOCK_DATA", default=False)
+USE_LIVE_DATA = config_bool("USE_LIVE_DATA", default=True)
 
 # ─── Criteria Metadata ────────────────────────────────────────────────────────
 CRITERIA = [
@@ -110,13 +98,13 @@ def _load_criterion_frame(
     The returned DataFrame is always indexed by h3_index in the caller.
     """
     if USE_MOCK_DATA or not USE_LIVE_DATA:
-        return mock_fn(), "mock"
+        return mock_fn(), "mock", None
 
     try:
-        return live_fn(h3_cells, bbox, use_mock=False), "live"
+        return live_fn(h3_cells, bbox, use_mock=False), "live", None
     except Exception as exc:
         logger.warning("%s live data failed, falling back to mock: %s", label, exc)
-        return mock_fn(), "fallback-mock"
+        return mock_fn(), "fallback-mock", str(exc)
 
 
 # ─── Views ────────────────────────────────────────────────────────────────────
@@ -229,7 +217,7 @@ class ScoreView(APIView):
 
         # Try live data first when enabled, then fall back to synthetic data per criterion.
         try:
-            df_green, green_source = _load_criterion_frame(
+            df_green, green_source, green_error = _load_criterion_frame(
                 "Greenness",
                 get_greenness,
                 lambda: get_greenness(h3_cells, bbox, use_mock=True),
@@ -237,7 +225,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_green = df_green.set_index('h3_index')
-            df_clim, climate_source = _load_criterion_frame(
+            df_clim, climate_source, climate_error = _load_criterion_frame(
                 "Climate",
                 get_weather,
                 lambda: get_weather(h3_cells, bbox, use_mock=True),
@@ -245,7 +233,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_clim = df_clim.set_index('h3_index')
-            df_build, buildings_source = _load_criterion_frame(
+            df_build, buildings_source, buildings_error = _load_criterion_frame(
                 "Buildings",
                 get_buildings,
                 lambda: get_buildings(h3_cells, bbox, use_mock=True),
@@ -253,7 +241,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_build = df_build.set_index('h3_index')
-            df_air, air_source = _load_criterion_frame(
+            df_air, air_source, air_error = _load_criterion_frame(
                 "Air quality",
                 get_air_quality,
                 lambda: get_air_quality(h3_cells, bbox, use_mock=True),
@@ -261,7 +249,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_air = df_air.set_index('h3_index')
-            df_heat, heat_source = _load_criterion_frame(
+            df_heat, heat_source, heat_error = _load_criterion_frame(
                 "Heat",
                 get_heat,
                 lambda: get_heat(h3_cells, bbox, use_mock=True),
@@ -269,7 +257,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_heat = df_heat.set_index('h3_index')
-            df_access, accessibility_source = _load_criterion_frame(
+            df_access, accessibility_source, accessibility_error = _load_criterion_frame(
                 "Accessibility",
                 get_accessibility,
                 lambda: get_accessibility(h3_cells, bbox, use_mock=True),
@@ -277,7 +265,7 @@ class ScoreView(APIView):
                 bbox,
             )
             df_access = df_access.set_index('h3_index')
-            df_trans, transit_source = _load_criterion_frame(
+            df_trans, transit_source, transit_error = _load_criterion_frame(
                 "Transit",
                 get_transit,
                 lambda: get_transit(h3_cells, bbox, use_mock=True),
@@ -333,6 +321,15 @@ class ScoreView(APIView):
             "accessibility": accessibility_source,
             "transit": transit_source,
         }
+        criterion_errors = {
+            "greenness": green_error,
+            "climate": climate_error,
+            "building_svf": buildings_error,
+            "air_quality": air_error,
+            "heat": heat_error,
+            "accessibility": accessibility_error,
+            "transit": transit_error,
+        }
 
         features = []
         for cell in h3_cells:
@@ -364,6 +361,7 @@ class ScoreView(APIView):
                     "score": round(score, 1),
                     "criteria": cell_criteria,
                     "data_sources": criterion_sources,
+                    "data_errors": criterion_errors,
                 },
             })
 
@@ -373,6 +371,7 @@ class ScoreView(APIView):
             "metadata": {
                 "h3_resolution": h3_resolution,
                 "data_sources": criterion_sources,
+                "data_errors": criterion_errors,
             },
         }
         return Response(geojson)

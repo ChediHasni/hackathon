@@ -80,48 +80,49 @@ def _live_air_quality(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     """
     from datetime import datetime, timedelta, timezone
     import h3 as h3lib
-    from preprocessing.gee_client import initialize_gee
+    from preprocessing.gee_client import build_h3_feature_collection, initialize_gee
 
     ee = initialize_gee()
 
-    min_lon, min_lat, max_lon, max_lat = bbox
-    region = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+    fc = build_h3_feature_collection(ee, h3lib, h3_cells)
 
     end_dt = datetime.now(timezone.utc)
     start_str = (end_dt - timedelta(days=90)).strftime('%Y-%m-%d')
     end_str = end_dt.strftime('%Y-%m-%d')
 
-    # CAMS Global Reanalysis (EAC4) — PM2.5 surrogate: total aerosol optical depth
     # Using Sentinel-5P for NO2
     s5p_no2 = (
         ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
-        .filterBounds(region)
+        .filterBounds(fc)
         .filterDate(start_str, end_str)
         .select('NO2_column_number_density')
         .median()
         .multiply(1e6)  # mol/m² → µmol/m² proxy
     )
 
-    # PM2.5 from Sentinel-5P aerosol
+    # PM2.5 proxy from Sentinel-5P aerosol
     s5p_aer = (
         ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_AER_AI')
-        .filterBounds(region)
+        .filterBounds(fc)
         .filterDate(start_str, end_str)
         .select('absorbing_aerosol_index')
         .median()
     )
 
+    no2_res = s5p_no2.reduceRegions(collection=fc, reducer=ee.Reducer.mean(), scale=1000).getInfo()
+    aer_res = s5p_aer.reduceRegions(collection=fc, reducer=ee.Reducer.mean(), scale=1000).getInfo()
+
+    no2_by_cell = {f['properties']['h3_index']: f['properties'].get('mean') for f in no2_res.get('features', [])}
+    aer_by_cell = {f['properties']['h3_index']: f['properties'].get('mean') for f in aer_res.get('features', [])}
+
     records = []
     for cell in h3_cells:
-        boundary = h3lib.cell_to_boundary(cell)
-        coords = [[lng, lat] for lat, lng in boundary]
-        coords.append(coords[0])
-        poly = ee.Geometry.Polygon(coords)
-
-        no2_val = s5p_no2.reduceRegion(ee.Reducer.mean(), poly, 1000).get('NO2_column_number_density').getInfo() or 50
-        pm25_proxy = s5p_aer.reduceRegion(ee.Reducer.mean(), poly, 1000).get('absorbing_aerosol_index').getInfo() or 10
-        pm25_val = max(2.0, min(80.0, float(pm25_proxy) * 10))
-        score = _pollution_to_score(float(pm25_val), float(no2_val))
+        no2_val = no2_by_cell.get(cell)
+        no2_val = float(no2_val) if no2_val is not None else 50.0
+        pm25_proxy = aer_by_cell.get(cell)
+        pm25_proxy = float(pm25_proxy) if pm25_proxy is not None else 1.0
+        pm25_val = max(2.0, min(80.0, pm25_proxy * 10.0))
+        score = _pollution_to_score(pm25_val, no2_val)
         records.append({'h3_index': cell, 'criterion_value_normalized': score})
 
     return pd.DataFrame(records)

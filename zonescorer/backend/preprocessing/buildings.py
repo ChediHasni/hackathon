@@ -105,6 +105,9 @@ def _live_buildings(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     if svf_max > svf_min:
         df['criterion_value_normalized'] = (df['svf'] - svf_min) / (svf_max - svf_min)
     else:
-        df['criterion_value_normalized'] = 0.5
+        phys_min, phys_max = 1.0 / (1.0 + 80.0 / 20.0), 1.0
+        df['criterion_value_normalized'] = np.clip(
+            (df['svf'] - phys_min) / (phys_max - phys_min), 0.0, 1.0
+        )
 
     return df[['h3_index', 'criterion_value_normalized']]

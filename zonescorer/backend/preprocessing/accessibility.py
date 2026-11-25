@@ -71,45 +71,19 @@ def _live_accessibility(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     Query OpenStreetMap POIs via osmnx for each H3 cell.
     """
     try:
-        import osmnx as ox
         import h3 as h3lib
-        from shapely.geometry import Polygon, box as shapely_box
-        import geopandas as gpd
+        from shapely.geometry import Polygon
     except ImportError as e:
         raise ImportError(f"Missing dependency for live accessibility data: {e}")
 
-    min_lon, min_lat, max_lon, max_lat = bbox
+    from preprocessing.osm_client import fetch_osm_features
 
-    overpass_endpoints = (
-        'https://overpass-api.de/api',
-        'https://overpass.private.coffee/api',
-    )
-    ox.settings.overpass_rate_limit = False
-    ox.settings.requests_timeout = 10
-
-    # Download all POIs within bounding box at once (osmnx 2.x expects (W, S, E, N))
-    pois_gdf = None
-    last_exc = None
-    for endpoint in overpass_endpoints:
-        ox.settings.overpass_url = endpoint
-        try:
-            pois_gdf = ox.features_from_bbox(
-                bbox=(min_lon, min_lat, max_lon, max_lat),
-                tags=POI_TAGS,
-            )
-            break
-        except ox._errors.InsufficientResponseError:
-            return pd.DataFrame({
-                'h3_index': h3_cells,
-                'criterion_value_normalized': np.zeros(len(h3_cells), dtype=float),
-            })
-        except Exception as exc:
-            last_exc = exc
-
-    if pois_gdf is None:
-        raise last_exc
-
-    pois_gdf = pois_gdf.to_crs(epsg=4326)
+    pois_gdf = fetch_osm_features(bbox, POI_TAGS)
+    if pois_gdf is None or len(pois_gdf) == 0:
+        return pd.DataFrame({
+            'h3_index': h3_cells,
+            'criterion_value_normalized': np.zeros(len(h3_cells), dtype=float),
+        })
 
     records = []
     for cell in h3_cells:

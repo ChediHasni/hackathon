@@ -33,3 +33,14 @@ def initialize_gee():
         credentials = ee.ServiceAccountCredentials(gee_service_account, str(key_path))
         ee.Initialize(credentials)
         return ee
+
+
+def build_h3_feature_collection(ee, h3lib, h3_cells: list[str]):
+    """Build an Earth Engine FeatureCollection from H3 cell boundaries."""
+    features = []
+    for cell in h3_cells:
+        boundary = h3lib.cell_to_boundary(cell)
+        coords = [[lng, lat] for lat, lng in boundary]
+        coords.append(coords[0])
+        features.append(ee.Feature(ee.Geometry.Polygon(coords), {'h3_index': cell}))
+    return ee.FeatureCollection(features)

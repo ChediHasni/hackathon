@@ -1,22 +1,14 @@
 """
-ZoneScore — Tunisia zone / neighbourhood reference data.
+ZoneScore — Tunisia zone / neighbourhood registry.
 
-Each zone represents a neighbourhood (or aggregation of H3 hexagons) with:
-  - id, name (FR), governorate, delegation
-  - per-criterion scores (0-100) averaged from underlying H3 hexagons
-  - avg_score: overall GNN quality score
-  - lat, lon: centroid for map display
-  - population_estimate: rough population
-
-In production these would come from a PostGIS/GeoDjango table of administrative
-boundaries joined to the GNN hexagon scores.  Here we use synthetic but
-realistic data so the chat system is testable immediately.
+Defines Tunisian administrative neighbourhoods with real coordinates and H3 cells.
+Per-criterion scores and overall ZoneGAT quality scores are populated dynamically
+from the live preprocessing + GNN pipeline via `api.live_zones` (never hardcoded).
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-
-from .criteria_config import CRITERION_IDS, DEFAULT_WEIGHT
+import h3 as h3lib
 
 
 @dataclass
@@ -30,10 +22,16 @@ class Zone:
     delegation_ar: str
     lat: float
     lon: float
-    scores: Dict[str, float]      # criterion_id -> score (0-100)
-    avg_score: float              # overall GNN score (0-100)
     population_estimate: int
-    h3_cells: List[str]           # underlying H3 hexagon ids (sample)
+    h3_cells: List[str] = field(default_factory=list)
+    scores: Dict[str, float] = field(default_factory=dict)
+    avg_score: float = 0.0
+    data_sources: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.h3_cells:
+            center_cell = h3lib.latlng_to_cell(self.lat, self.lon, 7)
+            self.h3_cells = [center_cell]
 
     def to_dict(self, include_scores: bool = True) -> dict:
         d = {
@@ -52,6 +50,8 @@ class Zone:
         }
         if include_scores:
             d["scores"] = {k: round(v, 1) for k, v in self.scores.items()}
+            if self.data_sources:
+                d["data_sources"] = dict(self.data_sources)
         return d
 
     def strongest_criterion(self) -> Optional[str]:
@@ -65,7 +65,7 @@ class Zone:
         return min(self.scores, key=self.scores.get)
 
 
-# ─── Tunisia neighbourhoods ─────────────────────────────────────────────────
+# ─── Tunisia neighbourhoods (real coordinates; scores populated from live APIs + GNN) ─
 ZONES: List[Zone] = [
     Zone(
         id="zone_tunis_medina",
@@ -74,15 +74,9 @@ ZONES: List[Zone] = [
         governorate="Tunis",
         governorate_ar="تونس",
         delegation="Tunis Centre",
-        delegation_ar="تونس中心",
+        delegation_ar="تونس المدينة",
         lat=36.7975, lon=10.1712,
-        scores={
-            "greenness": 25.0, "climate": 70.0, "building_svf": 30.0,
-            "air_quality": 55.0, "heat": 65.0, "accessibility": 95.0, "transit": 90.0,
-        },
-        avg_score=65.0,
         population_estimate=85000,
-        h3_cells=["87283082bffffff", "872830833ffffff"],
     ),
     Zone(
         id="zone_tunis_bardo",
@@ -93,13 +87,7 @@ ZONES: List[Zone] = [
         delegation="Le Bardo",
         delegation_ar="الباردو",
         lat=36.8087, lon=10.1386,
-        scores={
-            "greenness": 60.0, "climate": 75.0, "building_svf": 55.0,
-            "air_quality": 70.0, "heat": 70.0, "accessibility": 80.0, "transit": 75.0,
-        },
-        avg_score=72.0,
         population_estimate=75000,
-        h3_cells=["87283082a7fffff", "87283082affffff"],
     ),
     Zone(
         id="zone_lamarsa",
@@ -110,13 +98,7 @@ ZONES: List[Zone] = [
         delegation="La Marsa",
         delegation_ar="المرسى",
         lat=36.8814, lon=10.3231,
-        scores={
-            "greenness": 85.0, "climate": 85.0, "building_svf": 70.0,
-            "air_quality": 80.0, "heat": 75.0, "accessibility": 70.0, "transit": 60.0,
-        },
-        avg_score=84.0,
         population_estimate=95000,
-        h3_cells=["87283087b3fffff", "87283087affffff"],
     ),
     Zone(
         id="zone_carthage",
@@ -127,13 +109,7 @@ ZONES: List[Zone] = [
         delegation="Carthage",
         delegation_ar="قرطاج",
         lat=36.8521, lon=10.3256,
-        scores={
-            "greenness": 90.0, "climate": 88.0, "building_svf": 85.0,
-            "air_quality": 85.0, "heat": 80.0, "accessibility": 50.0, "transit": 45.0,
-        },
-        avg_score=87.0,
         population_estimate=22000,
-        h3_cells=["87283087b1fffff", "87283087b2fffff"],
     ),
     Zone(
         id="zone_sidibousaid",
@@ -144,13 +120,7 @@ ZONES: List[Zone] = [
         delegation="Sidi Bou Said",
         delegation_ar="سيدي بوسعيد",
         lat=36.8690, lon=10.3470,
-        scores={
-            "greenness": 80.0, "climate": 85.0, "building_svf": 75.0,
-            "air_quality": 82.0, "heat": 78.0, "accessibility": 55.0, "transit": 40.0,
-        },
-        avg_score=82.0,
         population_estimate=6000,
-        h3_cells=["87283087b4fffff", "87283087b5fffff"],
     ),
     Zone(
         id="zone_ariana_centre",
@@ -161,13 +131,7 @@ ZONES: List[Zone] = [
         delegation="Ariana Ville",
         delegation_ar="أريانة المدينة",
         lat=36.8618, lon=10.1926,
-        scores={
-            "greenness": 55.0, "climate": 75.0, "building_svf": 45.0,
-            "air_quality": 65.0, "heat": 68.0, "accessibility": 85.0, "transit": 70.0,
-        },
-        avg_score=70.0,
         population_estimate=110000,
-        h3_cells=["87283082a3fffff", "87283082a5fffff"],
     ),
     Zone(
         id="zone_manouba",
@@ -178,13 +142,7 @@ ZONES: List[Zone] = [
         delegation="Manouba",
         delegation_ar="منوبة",
         lat=36.8089, lon=10.1008,
-        scores={
-            "greenness": 65.0, "climate": 78.0, "building_svf": 60.0,
-            "air_quality": 72.0, "heat": 72.0, "accessibility": 70.0, "transit": 55.0,
-        },
-        avg_score=73.0,
         population_estimate=55000,
-        h3_cells=["8728308293fffff", "8728308295fffff"],
     ),
     Zone(
         id="zone_benarous",
@@ -195,13 +153,7 @@ ZONES: List[Zone] = [
         delegation="Ben Arous",
         delegation_ar="بن عروس",
         lat=36.7570, lon=10.2276,
-        scores={
-            "greenness": 40.0, "climate": 72.0, "building_svf": 45.0,
-            "air_quality": 50.0, "heat": 55.0, "accessibility": 82.0, "transit": 80.0,
-        },
-        avg_score=64.0,
         population_estimate=105000,
-        h3_cells=["87283081b3fffff", "87283081b5fffff"],
     ),
     Zone(
         id="zone_nabeul",
@@ -212,13 +164,7 @@ ZONES: List[Zone] = [
         delegation="Nabeul",
         delegation_ar="نابل",
         lat=36.4567, lon=10.7378,
-        scores={
-            "greenness": 70.0, "climate": 80.0, "building_svf": 65.0,
-            "air_quality": 75.0, "heat": 68.0, "accessibility": 75.0, "transit": 50.0,
-        },
-        avg_score=75.0,
         population_estimate=75000,
-        h3_cells=["8728308b93fffff", "8728308b95fffff"],
     ),
     Zone(
         id="zone_sousse_centre",
@@ -229,13 +175,7 @@ ZONES: List[Zone] = [
         delegation="Sousse Ville",
         delegation_ar="سوسة المدينة",
         lat=35.8256, lon=10.6366,
-        scores={
-            "greenness": 45.0, "climate": 82.0, "building_svf": 50.0,
-            "air_quality": 60.0, "heat": 60.0, "accessibility": 88.0, "transit": 85.0,
-        },
-        avg_score=70.0,
         population_estimate=220000,
-        h3_cells=["87283079a3fffff", "87283079a5fffff"],
     ),
     Zone(
         id="zone_sfax_centre",
@@ -246,13 +186,7 @@ ZONES: List[Zone] = [
         delegation="Sfax Ville",
         delegation_ar="صفاقس المدينة",
         lat=34.7406, lon=10.7604,
-        scores={
-            "greenness": 35.0, "climate": 80.0, "building_svf": 40.0,
-            "air_quality": 48.0, "heat": 50.0, "accessibility": 90.0, "transit": 82.0,
-        },
-        avg_score=63.0,
         population_estimate=330000,
-        h3_cells=["87283075a3fffff", "87283075a5fffff"],
     ),
     Zone(
         id="zone_hammanetz",
@@ -263,30 +197,18 @@ ZONES: List[Zone] = [
         delegation="Hammamet",
         delegation_ar="حمامات",
         lat=36.3983, lon=10.6153,
-        scores={
-            "greenness": 75.0, "climate": 85.0, "building_svf": 70.0,
-            "air_quality": 78.0, "heat": 72.0, "accessibility": 65.0, "transit": 55.0,
-        },
-        avg_score=79.0,
         population_estimate=70000,
-        h3_cells=["8728308b97fffff", "8728308b99fffff"],
     ),
     Zone(
         id="zone_ouedlil",
         name="Oued Lil",
         name_ar="وادي اللّيل",
-        governorate="Ben Arous",
-        governorate_ar="بن عروس",
-        delegation="Oued Lil",
+        governorate="Manouba",
+        governorate_ar="منوبة",
+        delegation="Oued Ellil",
         delegation_ar="وادي اللّيل",
-        lat=36.7200, lon=10.2500,
-        scores={
-            "greenness": 70.0, "climate": 78.0, "building_svf": 75.0,
-            "air_quality": 78.0, "heat": 75.0, "accessibility": 50.0, "transit": 40.0,
-        },
-        avg_score=76.0,
+        lat=36.8328, lon=10.0475,
         population_estimate=30000,
-        h3_cells=["87283081b7fffff", "87283081b9fffff"],
     ),
 ]
 
@@ -310,4 +232,4 @@ for z in ZONES:
     _LOCATION_ALIASES.append((z.governorate, z.id))
     _LOCATION_ALIASES.append((z.governorate_ar, z.id))
     _LOCATION_ALIASES.append((z.delegation, z.id))
-    _LOCATION_ALIASES.append((z.delegation_ar, z.id))
+    _LOCATION_ALIASES.append((z.delegation_ar, z.id))

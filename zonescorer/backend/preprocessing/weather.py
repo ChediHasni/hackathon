@@ -147,10 +147,22 @@ def _live_weather(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
                     nc_path = extracted_path
 
         with xr.open_dataset(nc_path, engine='netcdf4') as ds:
-            temp_k = float(ds['t2m'].mean().values)
-            temp_c = temp_k - 273.15
-            precip_m = float(ds['tp'].mean().values)
-            precip_mm = precip_m * 1000 * 30  # m/day → mm/month approx
+            scores = []
+            for cell in h3_cells:
+                lat, lon = h3lib.cell_to_latlng(cell)
+                try:
+                    t_sub = ds['t2m'].sel(latitude=lat, longitude=lon, method='nearest')
+                    p_sub = ds['tp'].sel(latitude=lat, longitude=lon, method='nearest')
+                    t_val = float(t_sub.mean().values)
+                    p_val = float(p_sub.mean().values)
+                    if np.isnan(t_val) or np.isnan(p_val):
+                        raise ValueError("NaN at nearest grid point")
+                except Exception:
+                    t_val = float(ds['t2m'].mean().values)
+                    p_val = float(ds['tp'].mean().values)
+                temp_c = t_val - 273.15
+                precip_mm = p_val * 1000 * 30  # m/day → mm/month approx
+                scores.append(_climate_score(temp_c, precip_mm))
     finally:
         for path in (tmp_path, extracted_path):
             if path and os.path.exists(path):
@@ -158,11 +170,6 @@ def _live_weather(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
                     os.unlink(path)
                 except OSError:
                     pass
-
-    scores = []
-    for cell in h3_cells:
-        score = _climate_score(temp_c, precip_mm)
-        scores.append(score)
 
     return pd.DataFrame({
         'h3_index': h3_cells,

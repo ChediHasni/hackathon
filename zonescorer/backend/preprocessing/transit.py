@@ -63,13 +63,10 @@ def _mock_transit(h3_cells: list[str]) -> pd.DataFrame:
 
 def _live_transit(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     """
-    Fetch transit stops from Transitland API v2.
-    Requires TRANSITLAND_API_KEY in .env.
+    Fetch transit stops from Transitland API v2, or fall back to OpenStreetMap
+    public transport stops via osmnx when TRANSITLAND_API_KEY is not configured.
     """
     api_key = config('TRANSITLAND_API_KEY', default='').strip()
-    if not api_key:
-        raise ValueError("TRANSITLAND_API_KEY is not configured in .env")
-
     min_lon, min_lat, max_lon, max_lat = bbox
 
     try:
@@ -77,35 +74,48 @@ def _live_transit(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     except ImportError as e:
         raise ImportError(f"Missing dependency: {e}")
 
-    headers = {'apikey': api_key}
-    params = {
-        'bbox': f"{min_lon},{min_lat},{max_lon},{max_lat}",
-        'per_page': 1000,
-        'format': 'geojson',
-    }
-
-    response = requests.get(
-        f"{TRANSITLAND_BASE_URL}/stops",
-        params=params,
-        headers=headers,
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
-    stops = data.get('stops', [])
-
-    # Map each stop to its H3 cell using the resolution of the requested cells
     h3_resolution = h3lib.get_resolution(h3_cells[0]) if h3_cells else 7
     stop_counts: dict[str, int] = {cell: 0 for cell in h3_cells}
-    for stop in stops:
-        try:
-            lon = stop['geometry']['coordinates'][0]
-            lat = stop['geometry']['coordinates'][1]
-            cell = h3lib.latlng_to_cell(lat, lon, h3_resolution)
-            if cell in stop_counts:
-                stop_counts[cell] += 1
-        except Exception:
-            continue
+
+    if api_key:
+        headers = {'apikey': api_key}
+        params = {
+            'bbox': f"{min_lon},{min_lat},{max_lon},{max_lat}",
+            'per_page': 1000,
+            'format': 'geojson',
+        }
+        response = requests.get(
+            f"{TRANSITLAND_BASE_URL}/stops",
+            params=params,
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        stops = response.json().get('stops', [])
+        for stop in stops:
+            try:
+                lon = stop['geometry']['coordinates'][0]
+                lat = stop['geometry']['coordinates'][1]
+                cell = h3lib.latlng_to_cell(lat, lon, h3_resolution)
+                if cell in stop_counts:
+                    stop_counts[cell] += 1
+            except Exception:
+                continue
+    else:
+        from shapely.geometry import Polygon
+        from preprocessing.osm_client import fetch_osm_features
+
+        transit_tags = {
+            'highway': ['bus_stop'],
+            'railway': ['station', 'tram_stop', 'halt', 'subway_entrance'],
+            'public_transport': ['platform', 'stop_position', 'station'],
+        }
+        stops_gdf = fetch_osm_features(bbox, transit_tags)
+        if stops_gdf is not None and len(stops_gdf) > 0:
+            for cell in h3_cells:
+                boundary = h3lib.cell_to_boundary(cell)
+                poly = Polygon([[lng, lat] for lat, lng in boundary])
+                stop_counts[cell] = int(stops_gdf.geometry.intersects(poly).sum())
 
     counts = np.array([float(stop_counts[cell]) for cell in h3_cells])
     normalized = np.log1p(counts) / np.log1p(MAX_STOP_COUNT)

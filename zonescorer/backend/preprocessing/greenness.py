@@ -67,12 +67,13 @@ def _live_greenness(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     """
     from datetime import datetime, timedelta, timezone
     import h3 as h3lib
-    from preprocessing.gee_client import initialize_gee
+    from preprocessing.gee_client import build_h3_feature_collection, initialize_gee
 
     ee = initialize_gee()
 
     min_lon, min_lat, max_lon, max_lat = bbox
     region = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+    fc = build_h3_feature_collection(ee, h3lib, h3_cells)
 
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=180)
@@ -80,26 +81,26 @@ def _live_greenness(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     # Sentinel-2 Surface Reflectance, cloud-masked, last 6 months
     s2 = (
         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-        .filterBounds(region)
+        .filterBounds(fc)
         .filterDate(start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'))
         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
         .median()
     )
 
     ndvi = s2.normalizedDifference(['B8', 'B4']).rename('NDVI')
+    reduced = ndvi.reduceRegions(
+        collection=fc,
+        reducer=ee.Reducer.mean(),
+        scale=30,
+    ).getInfo()
+
+    by_cell = {
+        feat['properties']['h3_index']: feat['properties'].get('mean')
+        for feat in reduced.get('features', [])
+    }
     records = []
-
     for cell in h3_cells:
-        boundary = h3lib.cell_to_boundary(cell)
-        coords = [[lng, lat] for lat, lng in boundary]
-        coords.append(coords[0])
-        poly = ee.Geometry.Polygon(coords)
-        mean_val = ndvi.reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=poly,
-            scale=10
-        ).get('NDVI').getInfo()
-
+        mean_val = by_cell.get(cell)
         if mean_val is None:
             mean_val = 0.3  # fallback
         records.append({'h3_index': cell, 'raw': float(mean_val)})
@@ -109,6 +110,6 @@ def _live_greenness(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     if ndvi_max > ndvi_min:
         df['criterion_value_normalized'] = (df['raw'] - ndvi_min) / (ndvi_max - ndvi_min)
     else:
-        df['criterion_value_normalized'] = 0.5
+        df['criterion_value_normalized'] = np.clip((df['raw'] - 0.05) / 0.70, 0.0, 1.0)
 
     return df[['h3_index', 'criterion_value_normalized']]

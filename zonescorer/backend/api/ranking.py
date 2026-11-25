@@ -121,6 +121,14 @@ def search_zones(
         if not matched_zone_ids:
             return [], {"location": location_debug, "total_zones": len(ZONE_BY_ID), "filtered": 0}
 
+    # ─── Ensure real API + GNN scores are loaded for target zones ───────────
+    from .live_zones import ensure_zones_scored
+    if matched_zone_ids is not None:
+        candidate_zones = [ZONE_BY_ID[zid] for zid in matched_zone_ids if zid in ZONE_BY_ID]
+    else:
+        candidate_zones = list(ZONE_BY_ID.values())
+    ensure_zones_scored(candidate_zones)
+
     # ─── Build criterion weights ────────────────────────────────────────────
     cw_map = _resolve_weights(weights, mentioned_criteria)
     total_weight = sum(cw.weight for cw in cw_map.values()) or 1.0
@@ -129,12 +137,7 @@ def search_zones(
     ranked: List[RankedZone] = []
     excluded_count = 0
 
-    for zone in ZONE_BY_ID.values():
-        # Location filter: exclude zones not in the matched set.
-        if matched_zone_ids is not None and zone.id not in matched_zone_ids:
-            excluded_count += 1
-            continue
-
+    for zone in candidate_zones:
         # Hard minimums: exclude if any criterion below its floor.
         excluded_reason = None
         for cid, min_val in min_scores.items():

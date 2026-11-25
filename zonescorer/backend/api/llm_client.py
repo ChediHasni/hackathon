@@ -28,15 +28,22 @@ class LLMResponse:
     tool_args: Dict[str, Any] = field(default_factory=dict)
     finish_reason: str = "text"           # "text" | "tool_call" | "error"
     raw: str = ""                         # raw response for debugging
+    raw_part: Optional[Dict[str, Any]] = None  # original Gemini part (preserves thoughtSignature)
 
 
 class LLMClient:
     """Thin wrapper over either a mock LLM or Google's Gemini API."""
 
+    FALLBACK_MODELS = (
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+    )
+
     def __init__(self):
         self.use_mock = config_bool("ZONESCORER_LLM_MOCK", default=True)
-        self.google_api_key = config("GOOGLE_API_KEY", default="")
-        self.model = config("ZONESCORER_LLM_MODEL", default="gemini-1.5-flash")
+        self.google_api_key = config("GOOGLE_API_KEY", default="").strip()
+        self.model = config("ZONESCORER_LLM_MODEL", default="gemini-3-flash-preview").strip()
         self.temperature = float(config("ZONESCORER_LLM_TEMPERATURE", default="0.3"))
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -208,29 +215,82 @@ class LLMClient:
         )
 
     # ─── Google AI Studio (Gemini) backend ──────────────────────────────────
+    @staticmethod
+    def _sanitize_gemini_schema(schema: Any) -> Any:
+        """Strip JSON-Schema keywords unsupported by Gemini functionDeclarations."""
+        if isinstance(schema, dict):
+            unsupported = {"additionalProperties", "default", "minimum", "maximum", "$schema"}
+            return {
+                k: LLMClient._sanitize_gemini_schema(v)
+                for k, v in schema.items()
+                if k not in unsupported
+            }
+        if isinstance(schema, list):
+            return [LLMClient._sanitize_gemini_schema(item) for item in schema]
+        return schema
+
     def _google_chat(
         self,
         system_prompt: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
     ) -> LLMResponse:
-        """Call Google's Generative AI API with function calling."""
-        # Convert OpenAI-style tools to Google functionDeclarations.
+        """Call Google's Generative AI API with proper Gemini function calling."""
         function_declarations = []
         for t in tools:
             fn = t.get("function", {})
+            params = self._sanitize_gemini_schema(
+                fn.get("parameters", {"type": "object", "properties": {}})
+            )
             function_declarations.append({
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                "parameters": params,
             })
 
-        # Build contents from messages (system prompt → systemInstruction).
-        contents = []
+        # Build Gemini contents from conversation history.
+        contents: List[Dict[str, Any]] = []
         for m in messages:
             role = m.get("role", "user")
-            # Google uses "user" and "model" roles; map "assistant" → "model".
-            google_role = "model" if role == "assistant" else role
+            if role == "tool":
+                tool_name = m.get("tool_name") or "search_zones"
+                raw_content = m.get("content", "{}")
+                try:
+                    parsed_result = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+                except (json.JSONDecodeError, TypeError):
+                    parsed_result = {"output": str(raw_content)}
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {"result": parsed_result},
+                        }
+                    }],
+                })
+                continue
+
+            if role == "assistant" and m.get("tool_calls"):
+                parts = []
+                if m.get("raw_part"):
+                    parts.append(m["raw_part"])
+                else:
+                    for tc in m["tool_calls"]:
+                        raw_args = tc.get("arguments", "{}")
+                        try:
+                            args_obj = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        except (json.JSONDecodeError, TypeError):
+                            args_obj = {}
+                        parts.append({
+                            "functionCall": {
+                                "name": tc.get("name", "search_zones"),
+                                "args": args_obj,
+                            }
+                        })
+                contents.append({"role": "model", "parts": parts})
+                continue
+
+            google_role = "model" if role == "assistant" else "user"
             contents.append({
                 "role": google_role,
                 "parts": [{"text": m.get("content", "")}],
@@ -250,39 +310,56 @@ class LLMClient:
             payload["tools"] = [{"functionDeclarations": function_declarations}]
             payload["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
 
-        url = (
-            f"{self.base_url}/models/{self.model}:generateContent"
-            f"?key={self.google_api_key}"
-        )
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        candidate_models = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
+        body = None
+        last_err = ""
 
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
+        for model_name in candidate_models:
+            url = (
+                f"{self.base_url}/models/{model_name}:generateContent"
+                f"?key={self.google_api_key}"
+            )
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode("utf-8", errors="replace")
+                last_err = f"HTTP {exc.code} ({model_name}): {err_body[:300]}"
+                if exc.code in (404, 429, 500, 503):
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = f"{type(exc).__name__} ({model_name}): {exc}"
+                continue
+
+        if body is None:
             return LLMResponse(
-                text="Désolé, je rencontre un problème technique. Réessayez plus tard.",
-                finish_reason="error", raw=str(exc),
+                text="Désolé, je rencontre un problème technique avec Gemini. Réessayez plus tard.",
+                finish_reason="error",
+                raw=last_err,
             )
 
         candidates = body.get("candidates", [])
         if not candidates:
             return LLMResponse(
                 text="Je n'ai pas pu générer de réponse. Pouvez-vous reformuler ?",
-                finish_reason="error", raw=json.dumps(body),
+                finish_reason="error",
+                raw=json.dumps(body),
             )
 
         candidate = candidates[0]
         content = candidate.get("content", {})
         parts = content.get("parts", [])
 
-        # Check for a function call.
+        # Check for a function call (preserve raw part for Gemini 3 thoughtSignature).
         for part in parts:
             fc = part.get("functionCall")
             if fc:
@@ -291,10 +368,13 @@ class LLMClient:
                     tool_args=dict(fc.get("args", {})),
                     finish_reason="tool_call",
                     raw=json.dumps(body),
+                    raw_part=part,
                 )
 
         # Otherwise return text.
         text_parts = [p.get("text", "") for p in parts if p.get("text")]
         return LLMResponse(
-            text="".join(text_parts), finish_reason="text", raw=json.dumps(body),
+            text="".join(text_parts),
+            finish_reason="text",
+            raw=json.dumps(body),
         )

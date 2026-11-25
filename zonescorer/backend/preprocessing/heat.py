@@ -71,12 +71,11 @@ def _live_heat(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     """
     from datetime import datetime, timedelta, timezone
     import h3 as h3lib
-    from preprocessing.gee_client import initialize_gee
+    from preprocessing.gee_client import build_h3_feature_collection, initialize_gee
 
     ee = initialize_gee()
 
-    min_lon, min_lat, max_lon, max_lat = bbox
-    region = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+    fc = build_h3_feature_collection(ee, h3lib, h3_cells)
 
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=365)
@@ -84,7 +83,7 @@ def _live_heat(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     # Landsat 8/9 Collection 2 Level 2
     landsat = (
         ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
-        .filterBounds(region)
+        .filterBounds(fc)
         .filterDate(start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'))
         .filter(ee.Filter.lt('CLOUD_COVER', 20))
         .select('ST_B10')
@@ -94,15 +93,12 @@ def _live_heat(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     # Convert to Celsius: DN → K → °C
     # ST_B10 scale factor: 0.00341802, offset: 149.0 (Kelvin)
     lst_celsius = landsat.multiply(0.00341802).add(149.0).subtract(273.15)
+    reduced = lst_celsius.reduceRegions(collection=fc, reducer=ee.Reducer.mean(), scale=30).getInfo()
+    by_cell = {f['properties']['h3_index']: f['properties'].get('mean') for f in reduced.get('features', [])}
 
     records = []
     for cell in h3_cells:
-        boundary = h3lib.cell_to_boundary(cell)
-        coords = [[lng, lat] for lat, lng in boundary]
-        coords.append(coords[0])
-        poly = ee.Geometry.Polygon(coords)
-
-        val = lst_celsius.reduceRegion(ee.Reducer.mean(), poly, 30).get('ST_B10').getInfo()
+        val = by_cell.get(cell)
         lst_val = float(val) if val is not None else 25.0
         score = _lst_to_score(lst_val)
         records.append({'h3_index': cell, 'criterion_value_normalized': score})

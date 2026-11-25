@@ -26,6 +26,15 @@ from .ranking import search_zones, RankedZone
 from .system_prompt import build_system_prompt
 
 # ─── Tool definitions ───────────────────────────────────────────────────────
+_WEIGHT_PROPERTIES = {
+    cid: {"type": "string", "enum": ["low", "medium", "high", "must_have"]}
+    for cid in CRITERION_IDS
+}
+_MIN_SCORE_PROPERTIES = {
+    cid: {"type": "number"}
+    for cid in CRITERION_IDS
+}
+
 TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "type": "function",
@@ -42,19 +51,16 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "weights": {
                         "type": "object",
                         "description": "Criterion importance levels: {criterion_id: 'low'|'medium'|'high'|'must_have'}",
-                        "additionalProperties": {"type": "string", "enum": ["low", "medium", "high", "must_have"]},
+                        "properties": _WEIGHT_PROPERTIES,
                     },
                     "min_scores": {
                         "type": "object",
-                        "description": "Hard minimum scores: {criterion_id: 0-100}",
-                        "additionalProperties": {"type": "number", "minimum": 0, "maximum": 100},
+                        "description": "Hard minimum scores (0-100) per criterion id.",
+                        "properties": _MIN_SCORE_PROPERTIES,
                     },
                     "top_k": {
                         "type": "integer",
-                        "description": "Number of zones to return (1-20)",
-                        "minimum": 1,
-                        "maximum": 20,
-                        "default": 5,
+                        "description": "Number of zones to return (1-20, default 5).",
                     },
                     "mentioned_criteria": {
                         "type": "array",
@@ -256,9 +262,11 @@ def chat_view(request: HttpRequest) -> JsonResponse:
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [{"name": tool_name, "arguments": json.dumps(tool_args)}],
+                    "raw_part": llm_resp.raw_part,
                 })
                 session["messages"].append({
                     "role": "tool",
+                    "tool_name": tool_name,
                     "content": f"Erreur de validation : {err}",
                 })
                 continue
@@ -277,9 +285,11 @@ def chat_view(request: HttpRequest) -> JsonResponse:
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [{"name": tool_name, "arguments": json.dumps(tool_args)}],
+                    "raw_part": llm_resp.raw_part,
                 })
                 session["messages"].append({
                     "role": "tool",
+                    "tool_name": tool_name,
                     "content": f"Erreur lors de la recherche : {exc}",
                 })
                 continue
@@ -299,6 +309,7 @@ def chat_view(request: HttpRequest) -> JsonResponse:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [{"name": tool_name, "arguments": json.dumps(tool_args)}],
+                "raw_part": llm_resp.raw_part,
             })
             tool_result_summary = {
                 "zones": zones_result,
@@ -306,6 +317,7 @@ def chat_view(request: HttpRequest) -> JsonResponse:
             }
             session["messages"].append({
                 "role": "tool",
+                "tool_name": tool_name,
                 "content": json.dumps(tool_result_summary, ensure_ascii=False),
             })
             continue

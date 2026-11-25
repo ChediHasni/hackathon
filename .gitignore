@@ -1,5 +1,7 @@
 zonescorer/.env
+zonescorer/.venv/
 zonescorer-494214-6afbb2def406.json
 zonescorer-87772645845d.json
+zonescorer-*.json
 *.pyc
 __pycache__/

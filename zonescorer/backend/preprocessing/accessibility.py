@@ -79,17 +79,35 @@ def _live_accessibility(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
         raise ImportError(f"Missing dependency for live accessibility data: {e}")
 
     min_lon, min_lat, max_lon, max_lat = bbox
-    overall_bbox = (max_lat, min_lat, max_lon, min_lon)  # osmnx format: N,S,E,W
 
-    # Download all POIs within bounding box at once
-    try:
-        pois_gdf = ox.features_from_bbox(
-            north=max_lat, south=min_lat, east=max_lon, west=min_lon,
-            tags={'amenity': ['school', 'hospital', 'pharmacy'],
-                  'shop': ['supermarket']}
-        )
-    except Exception:
-        return _mock_accessibility(h3_cells)
+    overpass_endpoints = (
+        'https://overpass-api.de/api',
+        'https://overpass.private.coffee/api',
+    )
+    ox.settings.overpass_rate_limit = False
+    ox.settings.requests_timeout = 10
+
+    # Download all POIs within bounding box at once (osmnx 2.x expects (W, S, E, N))
+    pois_gdf = None
+    last_exc = None
+    for endpoint in overpass_endpoints:
+        ox.settings.overpass_url = endpoint
+        try:
+            pois_gdf = ox.features_from_bbox(
+                bbox=(min_lon, min_lat, max_lon, max_lat),
+                tags=POI_TAGS,
+            )
+            break
+        except ox._errors.InsufficientResponseError:
+            return pd.DataFrame({
+                'h3_index': h3_cells,
+                'criterion_value_normalized': np.zeros(len(h3_cells), dtype=float),
+            })
+        except Exception as exc:
+            last_exc = exc
+
+    if pois_gdf is None:
+        raise last_exc
 
     pois_gdf = pois_gdf.to_crs(epsg=4326)
 

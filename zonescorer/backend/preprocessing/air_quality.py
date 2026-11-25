@@ -11,7 +11,6 @@ Note: Values are INVERTED — lower pollution = higher score.
 
 import numpy as np
 import pandas as pd
-from zonescorer.env import config
 
 
 # WHO guideline thresholds
@@ -79,26 +78,25 @@ def _live_air_quality(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     """
     Fetch PM2.5 and NO2 from CAMS via Google Earth Engine.
     """
-    try:
-        import ee
-        import h3 as h3lib
-    except ImportError as e:
-        raise ImportError(f"Missing dependency: {e}")
+    from datetime import datetime, timedelta, timezone
+    import h3 as h3lib
+    from preprocessing.gee_client import initialize_gee
 
-    gee_service_account = config('GEE_SERVICE_ACCOUNT', default='')
-    gee_key_file = config('GEE_KEY_FILE', default='')
-    credentials = ee.ServiceAccountCredentials(gee_service_account, gee_key_file)
-    ee.Initialize(credentials)
+    ee = initialize_gee()
 
     min_lon, min_lat, max_lon, max_lat = bbox
     region = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+
+    end_dt = datetime.now(timezone.utc)
+    start_str = (end_dt - timedelta(days=90)).strftime('%Y-%m-%d')
+    end_str = end_dt.strftime('%Y-%m-%d')
 
     # CAMS Global Reanalysis (EAC4) — PM2.5 surrogate: total aerosol optical depth
     # Using Sentinel-5P for NO2
     s5p_no2 = (
         ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
         .filterBounds(region)
-        .filterDate(ee.Date.now().advance(-3, 'month'), ee.Date.now())
+        .filterDate(start_str, end_str)
         .select('NO2_column_number_density')
         .median()
         .multiply(1e6)  # mol/m² → µmol/m² proxy
@@ -108,7 +106,7 @@ def _live_air_quality(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     s5p_aer = (
         ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_AER_AI')
         .filterBounds(region)
-        .filterDate(ee.Date.now().advance(-3, 'month'), ee.Date.now())
+        .filterDate(start_str, end_str)
         .select('absorbing_aerosol_index')
         .median()
     )

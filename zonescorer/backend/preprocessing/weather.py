@@ -97,35 +97,67 @@ def _live_weather(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     except ImportError as e:
         raise ImportError(f"Missing dependency for live weather data: {e}")
 
-    cds_key = config('CDS_API_KEY', default='')
-    c = cdsapi.Client(key=cds_key, url='https://cds.climate.copernicus.eu/api')
+    cds_key = config('CDS_API_KEY', default='').strip()
+    if not cds_key:
+        raise ValueError("CDS_API_KEY is not configured in .env")
+    c = cdsapi.Client(key=cds_key, url='https://cds.climate.copernicus.eu/api', retry_max=3, timeout=60)
 
-    import tempfile, os
+    import os
+    import tempfile
+    import zipfile
+
     with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as tmp:
         tmp_path = tmp.name
 
     min_lon, min_lat, max_lon, max_lat = bbox
-    c.retrieve(
-        'reanalysis-era5-land-monthly-means',
-        {
-            'product_type': 'monthly_averaged_reanalysis',
-            'variable': ['2m_temperature', 'total_precipitation'],
-            'year': '2023',
-            'month': [str(m).zfill(2) for m in range(1, 13)],
-            'time': '00:00',
-            'area': [max_lat, min_lon, min_lat, max_lon],
-            'format': 'netcdf',
-        },
-        tmp_path,
-    )
+    # Pad small bounding boxes so at least one ERA5-Land 0.1° grid point is included
+    if (max_lat - min_lat) < 0.25:
+        mid_lat = (min_lat + max_lat) / 2.0
+        min_lat, max_lat = mid_lat - 0.125, mid_lat + 0.125
+    if (max_lon - min_lon) < 0.25:
+        mid_lon = (min_lon + max_lon) / 2.0
+        min_lon, max_lon = mid_lon - 0.125, mid_lon + 0.125
 
-    ds = xr.open_dataset(tmp_path)
-    temp_k = float(ds['t2m'].mean().values)
-    temp_c = temp_k - 273.15
-    precip_m = float(ds['tp'].mean().values)
-    precip_mm = precip_m * 1000 * 30  # m/day → mm/month approx
+    extracted_path = None
+    try:
+        c.retrieve(
+            'reanalysis-era5-land-monthly-means',
+            {
+                'product_type': 'monthly_averaged_reanalysis',
+                'variable': ['2m_temperature', 'total_precipitation'],
+                'year': '2023',
+                'month': [str(m).zfill(2) for m in range(1, 13)],
+                'time': '00:00',
+                'area': [max_lat, min_lon, min_lat, max_lon],
+                'data_format': 'netcdf',
+                'download_format': 'unarchived',
+            },
+            tmp_path,
+        )
 
-    os.unlink(tmp_path)
+        nc_path = tmp_path
+        if zipfile.is_zipfile(tmp_path):
+            with zipfile.ZipFile(tmp_path, 'r') as zf:
+                nc_members = [m for m in zf.namelist() if m.endswith('.nc')]
+                if not nc_members:
+                    raise ValueError("CDS archive did not contain a .nc file")
+                with tempfile.NamedTemporaryFile(suffix='.nc', delete=False) as nc_tmp:
+                    nc_tmp.write(zf.read(nc_members[0]))
+                    extracted_path = nc_tmp.name
+                    nc_path = extracted_path
+
+        with xr.open_dataset(nc_path, engine='netcdf4') as ds:
+            temp_k = float(ds['t2m'].mean().values)
+            temp_c = temp_k - 273.15
+            precip_m = float(ds['tp'].mean().values)
+            precip_mm = precip_m * 1000 * 30  # m/day → mm/month approx
+    finally:
+        for path in (tmp_path, extracted_path):
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
     scores = []
     for cell in h3_cells:

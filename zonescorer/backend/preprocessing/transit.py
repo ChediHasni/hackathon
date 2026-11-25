@@ -14,7 +14,7 @@ import requests
 from zonescorer.env import config
 
 
-TRANSITLAND_BASE_URL = "https://transit.land/api/v2"
+TRANSITLAND_BASE_URL = "https://transit.land/api/v2/rest"
 MAX_STOP_COUNT = 15  # 95th percentile for normalization
 
 
@@ -66,12 +66,14 @@ def _live_transit(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     Fetch transit stops from Transitland API v2.
     Requires TRANSITLAND_API_KEY in .env.
     """
-    api_key = config('TRANSITLAND_API_KEY', default='')
+    api_key = config('TRANSITLAND_API_KEY', default='').strip()
+    if not api_key:
+        raise ValueError("TRANSITLAND_API_KEY is not configured in .env")
+
     min_lon, min_lat, max_lon, max_lat = bbox
 
     try:
         import h3 as h3lib
-        from shapely.geometry import Polygon, Point
     except ImportError as e:
         raise ImportError(f"Missing dependency: {e}")
 
@@ -82,26 +84,24 @@ def _live_transit(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
         'format': 'geojson',
     }
 
-    try:
-        response = requests.get(
-            f"{TRANSITLAND_BASE_URL}/stops",
-            params=params,
-            headers=headers,
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-        stops = data.get('stops', [])
-    except Exception:
-        return _mock_transit(h3_cells)
+    response = requests.get(
+        f"{TRANSITLAND_BASE_URL}/stops",
+        params=params,
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    stops = data.get('stops', [])
 
-    # Map each stop to its H3 cell
+    # Map each stop to its H3 cell using the resolution of the requested cells
+    h3_resolution = h3lib.get_resolution(h3_cells[0]) if h3_cells else 7
     stop_counts: dict[str, int] = {cell: 0 for cell in h3_cells}
     for stop in stops:
         try:
             lon = stop['geometry']['coordinates'][0]
             lat = stop['geometry']['coordinates'][1]
-            cell = h3lib.latlng_to_cell(lat, lon, 7)
+            cell = h3lib.latlng_to_cell(lat, lon, h3_resolution)
             if cell in stop_counts:
                 stop_counts[cell] += 1
         except Exception:

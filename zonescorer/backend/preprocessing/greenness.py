@@ -10,7 +10,6 @@ Output DataFrame columns: [h3_index, criterion_value_normalized]
 
 import numpy as np
 import pandas as pd
-from zonescorer.env import config
 
 
 def get_greenness(h3_cells: list[str], bbox: list[float], use_mock: bool = True) -> pd.DataFrame:
@@ -66,27 +65,23 @@ def _live_greenness(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
     Fetch real NDVI data from Google Earth Engine (Sentinel-2).
     Requires GEE_SERVICE_ACCOUNT and GEE_KEY_FILE in .env.
     """
-    try:
-        import ee
-    except ImportError:
-        raise ImportError("earthengine-api is required for live greenness data.")
-
+    from datetime import datetime, timedelta, timezone
     import h3 as h3lib
+    from preprocessing.gee_client import initialize_gee
 
-    gee_service_account = config('GEE_SERVICE_ACCOUNT', default='')
-    gee_key_file = config('GEE_KEY_FILE', default='')
-
-    credentials = ee.ServiceAccountCredentials(gee_service_account, gee_key_file)
-    ee.Initialize(credentials)
+    ee = initialize_gee()
 
     min_lon, min_lat, max_lon, max_lat = bbox
     region = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=180)
 
     # Sentinel-2 Surface Reflectance, cloud-masked, last 6 months
     s2 = (
         ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
         .filterBounds(region)
-        .filterDate(ee.Date.now().advance(-6, 'month'), ee.Date.now())
+        .filterDate(start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d'))
         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
         .median()
     )

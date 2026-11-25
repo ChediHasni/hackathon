@@ -10,6 +10,7 @@ Endpoints:
 import sys
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from zonescorer.env import config, config_bool
 
@@ -38,6 +39,7 @@ CRITERION_IDS = [c["id"] for c in CRITERIA]
 MAX_CELLS = 5000  # safety cap to prevent overloading the model
 H3_RESOLUTION = 7
 H3_FALLBACK_RESOLUTIONS = (7, 8, 9, 10)
+TUNISIA_BBOX = (7.4, 30.1, 11.7, 37.6)  # (minLon, minLat, maxLon, maxLat)
 
 
 # ─── Lazy imports to avoid heavy startup cost ─────────────────────────────────
@@ -153,6 +155,23 @@ class ScoreView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        t_min_lon, t_min_lat, t_max_lon, t_max_lat = TUNISIA_BBOX
+        if (
+            min_lon < t_min_lon
+            or max_lon > t_max_lon
+            or min_lat < t_min_lat
+            or max_lat > t_max_lat
+        ):
+            return Response(
+                {
+                    "error": (
+                        "ZoneScore is currently limited to Tunisia "
+                        f"([{t_min_lon}, {t_min_lat}, {t_max_lon}, {t_max_lat}])."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # ── Load modules ───────────────────────────────────────────────────────
         try:
             (
@@ -216,63 +235,59 @@ class ScoreView(APIView):
         )
 
         # Try live data first when enabled, then fall back to synthetic data per criterion.
+        # Note: GEE modules share httplib2 transport, which is not thread-safe, so they
+        # run sequentially inside one worker while independent sources run concurrently.
         try:
-            df_green, green_source, green_error = _load_criterion_frame(
-                "Greenness",
-                get_greenness,
-                lambda: get_greenness(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_green = df_green.set_index('h3_index')
-            df_clim, climate_source, climate_error = _load_criterion_frame(
-                "Climate",
-                get_weather,
-                lambda: get_weather(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_clim = df_clim.set_index('h3_index')
-            df_build, buildings_source, buildings_error = _load_criterion_frame(
-                "Buildings",
-                get_buildings,
-                lambda: get_buildings(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_build = df_build.set_index('h3_index')
-            df_air, air_source, air_error = _load_criterion_frame(
-                "Air quality",
-                get_air_quality,
-                lambda: get_air_quality(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_air = df_air.set_index('h3_index')
-            df_heat, heat_source, heat_error = _load_criterion_frame(
-                "Heat",
-                get_heat,
-                lambda: get_heat(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_heat = df_heat.set_index('h3_index')
-            df_access, accessibility_source, accessibility_error = _load_criterion_frame(
-                "Accessibility",
-                get_accessibility,
-                lambda: get_accessibility(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_access = df_access.set_index('h3_index')
-            df_trans, transit_source, transit_error = _load_criterion_frame(
-                "Transit",
-                get_transit,
-                lambda: get_transit(h3_cells, bbox, use_mock=True),
-                h3_cells,
-                bbox,
-            )
-            df_trans = df_trans.set_index('h3_index')
+            def _run_gee_criteria():
+                gee_tasks = (
+                    ("greenness", "Greenness", get_greenness),
+                    ("air_quality", "Air quality", get_air_quality),
+                    ("heat", "Heat", get_heat),
+                )
+                gee_out = {}
+                for key, label, fn in gee_tasks:
+                    df, source, err = _load_criterion_frame(
+                        label,
+                        fn,
+                        lambda f=fn: f(h3_cells, bbox, use_mock=True),
+                        h3_cells,
+                        bbox,
+                    )
+                    gee_out[key] = (df.set_index('h3_index'), source, err)
+                return gee_out
+
+            other_tasks = {
+                "climate": ("Climate", get_weather),
+                "building_svf": ("Buildings", get_buildings),
+                "accessibility": ("Accessibility", get_accessibility),
+                "transit": ("Transit", get_transit),
+            }
+            results = {}
+            with ThreadPoolExecutor(max_workers=len(other_tasks) + 1) as executor:
+                gee_future = executor.submit(_run_gee_criteria)
+                futures = {
+                    key: executor.submit(
+                        _load_criterion_frame,
+                        label,
+                        fn,
+                        lambda f=fn: f(h3_cells, bbox, use_mock=True),
+                        h3_cells,
+                        bbox,
+                    )
+                    for key, (label, fn) in other_tasks.items()
+                }
+                results.update(gee_future.result())
+                for key, future in futures.items():
+                    df, source, err = future.result()
+                    results[key] = (df.set_index('h3_index'), source, err)
+
+            df_green, green_source, green_error = results["greenness"]
+            df_clim, climate_source, climate_error = results["climate"]
+            df_build, buildings_source, buildings_error = results["building_svf"]
+            df_air, air_source, air_error = results["air_quality"]
+            df_heat, heat_source, heat_error = results["heat"]
+            df_access, accessibility_source, accessibility_error = results["accessibility"]
+            df_trans, transit_source, transit_error = results["transit"]
         except Exception as e:
             logger.exception("Preprocessing error")
             return Response(

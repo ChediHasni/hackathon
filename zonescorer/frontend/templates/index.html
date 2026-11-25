@@ -208,9 +208,9 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
     <div id="info-panel">
       <div id="welcome">
         <div class="big-icon">🗺️</div>
-        <h3>Score Any Zone on Earth</h3>
-        <p style="margin-bottom:20px">Draw a rectangle on the map, then run the analysis to get AI-powered quality scores for every hexagon.</p>
-        <div class="step"><div class="step-num">1</div><div class="step-text">Click <strong>Draw Bounding Box</strong> and drag a rectangle on the map</div></div>
+        <h3>Score Any Zone in Tunisia</h3>
+        <p style="margin-bottom:20px">Draw a rectangle inside Tunisia on the map, then run the analysis to get AI-powered quality scores for every hexagon.</p>
+        <div class="step"><div class="step-num">1</div><div class="step-text">Click <strong>Draw Bounding Box</strong> and drag a rectangle inside Tunisia</div></div>
         <div class="step"><div class="step-num">2</div><div class="step-text">Click <strong>Run ZoneScore Analysis</strong> to score all hexagons</div></div>
         <div class="step"><div class="step-num">3</div><div class="step-text">Click any hexagon to see its criterion breakdown</div></div>
       </div>
@@ -254,12 +254,27 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-// ─── Map setup ─────────────────────────────────────────────
-const map = L.map('map', {zoomControl: true}).setView([20, 0], 3);
+// ─── Map setup (restricted to Tunisia) ──────────────────────
+const TUNISIA_BOUNDS = L.latLngBounds([30.1, 7.4], [37.6, 11.7]);
+const map = L.map('map', {
+  zoomControl: true,
+  minZoom: 6,
+  maxZoom: 18,
+  maxBounds: TUNISIA_BOUNDS,
+  maxBoundsViscosity: 1.0
+}).fitBounds(TUNISIA_BOUNDS);
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  attribution: '©OpenStreetMap ©CartoDB',
-  subdomains: 'abcd', maxZoom: 19
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Tiles © Esri',
+  maxZoom: 18
+}).addTo(map);
+
+L.rectangle(TUNISIA_BOUNDS, {
+  color: '#2563eb',
+  weight: 1.5,
+  dashArray: '6 4',
+  fill: false,
+  interactive: false
 }).addTo(map);
 
 // ─── Draw control ───────────────────────────────────────────
@@ -280,12 +295,19 @@ const API_BASE_URL = window.ZONESCORER_API_BASE_URL || 'http://127.0.0.1:8000';
 
 map.on(L.Draw.Event.CREATED, e => {
   drawnItems.clearLayers();
-  drawnItems.addLayer(e.layer);
   const b = e.layer.getBounds();
+  if (!TUNISIA_BOUNDS.contains(b)) {
+    currentBbox = null;
+    document.getElementById('btn-score').disabled = true;
+    document.getElementById('btn-draw').classList.remove('active');
+    setStatus('Please draw the bounding box inside Tunisia.', 'error');
+    return;
+  }
+  drawnItems.addLayer(e.layer);
   currentBbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
   document.getElementById('btn-score').disabled = false;
   document.getElementById('btn-draw').classList.remove('active');
-  setStatus('Bounding box selected. Click Run ZoneScore Analysis.', 'info');
+  setStatus('Bounding box selected in Tunisia. Click Run ZoneScore Analysis.', 'info');
 });
 
 function startDraw() {

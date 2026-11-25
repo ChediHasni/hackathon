@@ -78,28 +78,14 @@ def _live_buildings(h3_cells: list[str], bbox: list[float]) -> pd.DataFrame:
 
     min_lon, min_lat, max_lon, max_lat = bbox
 
-    # Overture Maps S3 endpoint (public, no auth required for parquet)
-    overture_url = (
-        "s3://overturemaps-us-west-2/release/2024-07-22.0/theme=buildings/type=building/"
-    )
+    # Overture Maps via official spatial-indexed client (public, no auth required)
+    from overturemaps import core as overture_core
 
-    try:
-        import pyarrow.dataset as ds
-        import pyarrow.compute as pc
-
-        dataset = ds.dataset(overture_url, format='parquet', filesystem=None)
-        # Spatial filter by bbox
-        filt = (
-            (pc.field('bbox', 'minx') < max_lon) &
-            (pc.field('bbox', 'maxx') > min_lon) &
-            (pc.field('bbox', 'miny') < max_lat) &
-            (pc.field('bbox', 'maxy') > min_lat)
-        )
-        table = dataset.to_table(filter=filt, columns=['geometry', 'height'])
-        gdf = gpd.GeoDataFrame.from_arrow(table)
-    except Exception:
-        # Fallback to mock if Overture is unavailable
-        return _mock_buildings(h3_cells)
+    gdf = overture_core.geodataframe('building', bbox=(min_lon, min_lat, max_lon, max_lat))
+    if 'height' in gdf.columns and 'num_floors' in gdf.columns:
+        gdf['height'] = gdf['height'].fillna(gdf['num_floors'] * 3.0)
+    elif 'height' not in gdf.columns:
+        gdf['height'] = 5.0
 
     records = []
     for cell in h3_cells:

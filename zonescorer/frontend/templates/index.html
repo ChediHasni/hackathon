@@ -176,6 +176,36 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 /* ─── Scrollbar ──────────────────────────────────────────── */
 .leaflet-bar a{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important}
 .leaflet-bar a:hover{background:var(--surface2)!important}
+
+/* ─── Chat Panel ────────────────────────────────────────────── */
+#chat-messages{height:300px}
+.chat-msg{max-width:90%;padding:10px 14px;border-radius:10px;font-size:.85rem;line-height:1.4;position:relative}
+.chat-msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.chat-msg.assistant{align-self:flex-start;background:var(--surface2);border:1px solid var(--border);color:var(--text)}
+.chat-msg.assistant .zone-list{margin-top:8px}
+.zone-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;margin:6px 0;display:flex;justify-content:space-between;align-items:center;
+}
+.zone-card .zone-info{flex:1}
+.zone-card .zone-name{font-weight:600;font-size:.9rem}
+.zone-card .zone-meta{font-size:.7rem;color:var(--muted);margin-top:2px}
+.zone-card .match-score{
+  font-weight:700;font-size:1.1rem;color:var(--accent);min-width:45px;text-align:right
+}
+.zone-card .match-score small{font-size:.65rem;opacity:.7}
+.quick-reply{
+  background:var(--surface2);border:1px solid var(--border);border-radius:20px;
+  padding:6px 12px;font-size:.75rem;cursor:pointer;color:var(--text)
+}
+.quick-reply:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pref-chip{
+  background:var(--surface2);border:1px solid var(--border);border-radius:16px;
+  padding:4px 10px;font-size:.75rem;display:flex;align-items:center;gap:6px
+}
+.pref-chip .pref-remove{background:none;border:none;color:var(--muted);cursor:pointer;font-weight:bold}
+.pref-chip .pref-remove:hover{color:var(--red)}
+#chat-input:focus{outline:none;border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -201,6 +231,9 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
       </button>
       <button id="btn-clear" class="btn" onclick="clearAll()">
         ✕ Clear
+      </button>
+      <button id="btn-chat-toggle" class="btn" onclick="toggleChat()" style="margin-top:8px;background:var(--surface2);border:1px solid var(--border)">
+        <span>💬</span> Discuter avec l'assistant
       </button>
       <div id="status-bar"></div>
     </div>
@@ -229,6 +262,27 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
         </div>
         <div class="criteria-grid" id="criteria-grid"></div>
       </div>
+    </div>
+
+    <!-- ─── Chat Panel ─────────────────────────────────────────── -->
+    <div id="chat-panel" style="display:none;border-top:1px solid var(--border)">
+      <div class="control-label" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Assistant</span>
+        <button id="btn-chat-close" class="btn" onclick="toggleChat()" style="width:auto;padding:4px 8px;font-size:.7rem">✕</button>
+      </div>
+      <div id="chat-messages" style="flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px"></div>
+      <div id="chat-quick-replies" style="padding:8px 16px;display:flex;gap:6px;flex-wrap:wrap"></div>
+      <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:8px">
+        <input type="text" id="chat-input" placeholder="Écrivez votre demande…" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:.85rem"/>
+        <button id="btn-chat-send" class="btn" style="width:auto;padding:8px 16px">Envoyer</button>
+      </div>
+    </div>
+
+    <!-- ─── Preference Chips ───────────────────────────────────── -->
+    <div id="pref-panel" style="border-top:1px solid var(--border);padding:12px 16px;display:none">
+      <div class="control-label">Vos préférences</div>
+      <div id="pref-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px"></div>
+      <button id="btn-pref-reset" class="btn" style="width:auto;margin-top:8px;padding:6px 12px;font-size:.75rem">Réinitialiser</button>
     </div>
   </aside>
 
@@ -514,7 +568,156 @@ function escapeHtml(text) {
 function getCsrf() {
   const m = document.cookie.match(/csrftoken=([^;]+)/);
   return m ? m[1] : '';
+}// ─── Chat state ───────────────────────────────────────────────
+let chatSessionId = null;
+let chatZoneLayer = null;
+const chatCriteriaColors = {
+  greenness: '#16a34a', climate: '#0ea5e9', building_svf: '#6366f1',
+  air_quality: '#10b981', heat: '#f59e0b', accessibility: '#ec4899', transit: '#8b5cf6'
+};
+
+function toggleChat() {
+  const panel = document.getElementById('chat-panel');
+  const pref = document.getElementById('pref-panel');
+  const showing = panel.style.display !== 'none';
+  panel.style.display = showing ? 'none' : 'block';
+  pref.style.display = showing ? 'none' : 'block';
+  if (!showing) {
+    document.getElementById('chat-input').focus();
+    if (!chatSessionId) addBotMessage("Bonjour ! Je suis l'assistant ZoneScore.");
+  }
 }
+
+function addUserMessage(text) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg user';
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function addBotMessage(text, zones = [], quickReplies = []) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+  div.innerHTML = '<div>' + escapeHtml(text) + '</div>';
+  if (zones.length) {
+    const list = document.createElement('div');
+    list.className = 'zone-list';
+    zones.forEach(z => {
+      const card = document.createElement('div');
+      card.className = 'zone-card';
+      card.onclick = () => highlightZoneOnMap(z.zone);
+      const critBits = Object.entries(z.matched_criteria || {}).map(([cid, val]) => {
+        return '<span style="color:' + (chatCriteriaColors[cid] || '#666') + ';font-weight:600">' + cid + '</span> ' + val.toFixed(0);
+      }).join('  ·  ');
+      card.innerHTML = '<div class="zone-info"><div class="zone-name">' + escapeHtml(z.zone.name) + '</div><div class="zone-meta">' + escapeHtml(z.zone.governorate) + ' · ' + escapeHtml(z.zone.delegation) + '</div><div style="margin-top:4px;font-size:.72rem;color:var(--muted)">' + critBits + '</div></div><div class="match-score">' + z.match_score.toFixed(0) + '<small>/100</small></div>';
+      list.appendChild(card);
+    });
+    div.appendChild(list);
+  }
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  const qrContainer = document.getElementById('chat-quick-replies');
+  qrContainer.innerHTML = '';
+  quickReplies.forEach(qr => {
+    const btn = document.createElement('button');
+    btn.className = 'quick-reply';
+    btn.textContent = qr;
+    btn.onclick = () => { document.getElementById('chat-input').value = qr; sendChatMessage(); };
+    qrContainer.appendChild(btn);
+  });
+}async function sendChatMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  addUserMessage(text);
+
+  showSpinner(true);
+  try {
+    const res = await fetch('/api/chat/', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},
+      body: JSON.stringify({message: text, session_id: chatSessionId})
+    });
+    const data = await res.json();
+    chatSessionId = data.session_id;
+    addBotMessage(data.reply || '', data.zones || []);
+    updatePrefs(data.profile || {});
+    if (data.zones && data.zones.length) renderZoneMapMarkers(data.zones);
+  } catch (e) {
+    addBotMessage("Erreur réseau : impossible de joindre le serveur.");
+  } finally {
+    showSpinner(false);
+  }
+}
+
+function updatePrefs(profile) {
+  const container = document.getElementById('pref-chips');
+  container.innerHTML = '';
+  if (profile.location) {
+    addPrefChip('location', 'Lieu', profile.location);
+  }
+  if (profile.weights) {
+    Object.entries(profile.weights).forEach(([cid, level]) => {
+      addPrefChip('criterion_' + cid, cid, level);
+    });
+  }
+  if (profile.min_scores) {
+    Object.entries(profile.min_scores).forEach(([cid, val]) => {
+      addPrefChip('min_' + cid, cid + ' min', '≥' + val);
+    });
+  }
+  document.getElementById('pref-panel').style.display = Object.keys(profile || {}).length ? 'block' : 'none';
+}
+
+function addPrefChip(key, label, value) {
+  const container = document.getElementById('pref-chips');
+  const div = document.createElement('div');
+  div.className = 'pref-chip';
+  div.dataset.key = key;
+  div.innerHTML = '<span>' + escapeHtml(label) + ':</span> <strong>' + escapeHtml(String(value)) + '</strong> <span class="pref-remove" onclick="removePrefChip(\'' + escapeHtml(key) + '\')">×</span>';
+  container.appendChild(div);
+}
+
+function removePrefChip(key) {
+  const el = document.querySelector('#pref-chips [data-key="' + escapeHtml(key) + '"]');
+  if (el) el.remove();
+}
+
+function renderZoneMapMarkers(zones) {
+  clearZoneMarkers();
+  chatZoneLayer = L.featureGroup().addTo(map);
+  zones.forEach(z => {
+    const zone = z.zone;
+    const marker = L.circleMarker([zone.lat, zone.lon], {
+      radius: 10, color: '#2563eb', weight: 2, fillColor: '#2563eb', fillOpacity: 0.6
+    }).bindTooltip('<strong>' + escapeHtml(zone.name) + '</strong><br/>Score: ' + z.match_score.toFixed(0) + '/100');
+    marker.addTo(chatZoneLayer);
+  });
+  if (zones.length) map.fitBounds(chatZoneLayer.getBounds(), {padding: [40, 40]});
+}
+
+function clearZoneMarkers() {
+  if (chatZoneLayer) { map.removeLayer(chatZoneLayer); chatZoneLayer = null; }
+}
+
+function highlightZoneOnMap(zone) {
+  map.setView([zone.lat, zone.lon], 14, {animate: true});
+}
+
+document.getElementById('btn-chat-send').onclick = sendChatMessage;
+document.getElementById('chat-input').addEventListener('keypress', e => {
+  if (e.key === 'Enter') sendChatMessage();
+});
+document.getElementById('btn-pref-reset').onclick = () => {
+  document.getElementById('pref-chips').innerHTML = '';
+  document.getElementById('pref-panel').style.display = 'none';
+  chatSessionId = null;
+};
 </script>
 </body>
 </html>
